@@ -285,6 +285,10 @@ export type WorkspaceBranchBlockReason =
   | 'pending_server_requests'
   | 'persisted_server_requests'
 
+export type WorkspacePushBlockReason =
+  | WorkspaceBranchBlockReason
+  | 'unresolved_server_request_scope'
+
 export type UiWorkspaceDirtyKind =
   | 'modified'
   | 'added'
@@ -341,6 +345,29 @@ export type UiWorkspaceBranchState = {
   blockedReasons: WorkspaceBranchBlockReason[]
 }
 
+export type UiWorkspacePushStatus = {
+  cwd: string
+  isRepo: boolean
+  currentBranch: string
+  hasUpstream: boolean
+  upstreamRemote: string
+  upstreamBranch: string
+  aheadCount: number
+  behindCount: number
+  hasCommitsToPush: boolean
+  canPush: boolean
+  blockedReasons: WorkspacePushBlockReason[]
+  suggestedUpstreamCommand: string
+}
+
+export type UiWorkspacePushResult = {
+  ok: boolean
+  currentBranch: string
+  upstreamRemote: string
+  upstreamBranch: string
+  summary: string
+}
+
 export type WorkspaceGuardState = {
   blockedReasons: WorkspaceBranchBlockReason[]
   livePendingRequestCount: number
@@ -362,6 +389,14 @@ export type WorkspaceApprovalState = {
   persisted: UiPersistedServerRequest[]
 }
 
+export type WorkspacePushState = {
+  status: UiWorkspacePushStatus | null
+  isLoading: boolean
+  isPushing: boolean
+  lastResult: UiWorkspacePushResult | null
+  lastError: string | null
+}
+
 export type SessionApprovalState = {
   globalLive: UiServerRequest[]
   globalPersisted: UiPersistedServerRequest[]
@@ -371,6 +406,7 @@ export type WorkspaceModel = {
   cwd: string
   branch: WorkspaceBranchState
   guard: WorkspaceGuardState
+  push: WorkspacePushState
   gitStatus: {
     isDirty: boolean
     summary: UiWorkspaceDirtySummary | null

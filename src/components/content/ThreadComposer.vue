@@ -255,6 +255,27 @@
                 </ul>
               </div>
 
+              <div class="thread-composer-branch-push">
+                <p class="thread-composer-branch-push-title">
+                  {{ tUi(normalizedLanguage, 'composer.branchPushTitle') }}
+                </p>
+                <p v-if="branchPushSummary" class="thread-composer-branch-push-copy">
+                  {{ branchPushSummary }}
+                </p>
+                <p v-if="branchPushCommand" class="thread-composer-branch-push-command">
+                  {{ branchPushCommand }}
+                </p>
+                <button
+                  v-if="shouldShowPushButton"
+                  type="button"
+                  class="thread-composer-branch-push-button"
+                  :disabled="!canTriggerBranchPush"
+                  @click="onPushBranch"
+                >
+                  {{ isBranchPushing ? tUi(normalizedLanguage, 'composer.branchPushing') : branchPushActionLabel }}
+                </button>
+              </div>
+
               <p v-if="isBranchLoading" class="thread-composer-branch-menu-empty">
                 {{ tUi(normalizedLanguage, 'composer.branchLoading') }}
               </p>
@@ -398,6 +419,7 @@ import type {
   UiRateLimitUsage,
   UiThreadContextUsage,
   UiWorkspaceBranchState,
+  WorkspacePushBlockReason,
   WorkspaceModel,
   WorkspaceBranchBlockReason,
 } from '../../types/codex'
@@ -453,6 +475,7 @@ const emit = defineEmits<{
   'refresh-branches': []
   'switch-branch': [branch: string]
   'create-branch': [branch: string]
+  'push-branch': []
   'dismiss-persisted-request': [requestId: number]
 }>()
 
@@ -608,6 +631,18 @@ const branchDirtyOverflowCount = computed(() => {
 const branchPersistedRecords = computed<UiPersistedServerRequest[]>(() =>
   resolvedPersistedServerRequests.value.slice(0, 3),
 )
+const resolvedWorkspacePushState = computed(() =>
+  props.workspaceModel?.push ?? {
+    status: null,
+    isLoading: false,
+    isPushing: false,
+    lastResult: null,
+    lastError: null,
+  },
+)
+const branchPushStatus = computed(() => resolvedWorkspacePushState.value.status)
+const isBranchPushLoading = computed(() => resolvedWorkspacePushState.value.isLoading === true)
+const isBranchPushing = computed(() => resolvedWorkspacePushState.value.isPushing === true)
 const availableBranches = computed(() => {
   const branches = resolvedWorkspaceBranchState.value?.branches ?? []
   const current = currentBranchName.value
@@ -616,6 +651,66 @@ const availableBranches = computed(() => {
     normalized.unshift(current)
   }
   return Array.from(new Set(normalized))
+})
+const branchPushTarget = computed(() => {
+  const status = branchPushStatus.value
+  if (!status?.hasUpstream) return ''
+  const remote = status.upstreamRemote.trim()
+  const branch = status.upstreamBranch.trim()
+  if (!remote || !branch) return ''
+  return `${remote}/${branch}`
+})
+const branchPushSummary = computed(() => {
+  const status = branchPushStatus.value
+  if (isBranchPushLoading.value) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushLoading')
+  }
+  if (!status) return ''
+  if (status.blockedReasons.includes('unresolved_server_request_scope' as WorkspacePushBlockReason)) {
+    return tUi(normalizedLanguage.value, 'composer.pushBlockedUnresolvedScope')
+  }
+  if (!status.isRepo) {
+    return tUi(normalizedLanguage.value, 'composer.branchBlockedNotRepo')
+  }
+  if (!status.currentBranch) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushDetachedHead')
+  }
+  if (!status.hasUpstream) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushMissingUpstream')
+  }
+  if (!status.hasCommitsToPush) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushUpToDate')
+  }
+  if (status.behindCount > 0) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushBehindWarning', { count: status.behindCount })
+  }
+  return tUi(normalizedLanguage.value, 'composer.branchPushReady', { target: branchPushTarget.value || status.currentBranch })
+})
+const branchPushCommand = computed(() => {
+  const status = branchPushStatus.value
+  if (!status || status.hasUpstream) return ''
+  const command = status.suggestedUpstreamCommand.trim()
+  if (!command) return ''
+  return tUi(normalizedLanguage.value, 'composer.branchPushSuggestedCommand', { command })
+})
+const branchPushActionLabel = computed(() => {
+  const target = branchPushTarget.value
+  return tUi(normalizedLanguage.value, 'composer.branchPushAction', {
+    target: target || currentBranchName.value || tUi(normalizedLanguage.value, 'composer.branch'),
+  })
+})
+const shouldShowPushButton = computed(() => {
+  const status = branchPushStatus.value
+  return Boolean(status?.hasUpstream && status.hasCommitsToPush)
+})
+const canTriggerBranchPush = computed(() => {
+  const status = branchPushStatus.value
+  if (!status?.hasUpstream) return false
+  if (!status.hasCommitsToPush) return false
+  return props.disabled !== true
+    && isBranchSwitching.value === false
+    && isBranchPushing.value === false
+    && status.canPush === true
 })
 function getBranchBlockedReasonLabel(reason: WorkspaceBranchBlockReason): string {
   if (reason === 'not_repo') return tUi(normalizedLanguage.value, 'composer.branchBlockedNotRepo')
@@ -992,6 +1087,11 @@ function onCreateBranch(): void {
   closeBranchMenu()
 }
 
+function onPushBranch(): void {
+  if (!canTriggerBranchPush.value) return
+  emit('push-branch')
+}
+
 function onDismissPersistedRequest(requestId: number): void {
   if (!Number.isInteger(requestId)) return
   const confirmed = window.confirm(
@@ -1285,6 +1385,30 @@ watch(
 
 .thread-composer-branch-persisted-dismiss {
   @apply shrink-0 rounded-md border border-sky-200 bg-white px-2 py-1 text-[10px] font-medium text-sky-800 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.thread-composer-branch-push {
+  @apply mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-2;
+}
+
+.thread-composer-branch-push-title {
+  @apply m-0 text-[10px] font-medium text-emerald-950;
+}
+
+.thread-composer-branch-push-copy {
+  @apply mt-1 mb-0 text-[10px] leading-4 text-emerald-900;
+}
+
+.thread-composer-branch-push-command {
+  @apply mt-1 mb-0 break-all rounded-md bg-white/80 px-2 py-1 font-mono text-[10px] leading-4 text-emerald-950;
+}
+
+.thread-composer-branch-push-hint {
+  @apply mt-1 mb-0 text-[10px] leading-4 text-emerald-800;
+}
+
+.thread-composer-branch-push-button {
+  @apply mt-2 inline-flex w-full items-center justify-center rounded-lg border border-emerald-300 bg-white px-2 py-1.5 text-[11px] font-medium text-emerald-900 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50;
 }
 
 .thread-composer-branch-menu-empty {

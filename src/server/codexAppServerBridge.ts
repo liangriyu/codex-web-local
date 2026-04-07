@@ -335,6 +335,20 @@ type WorkspaceGitStatus = {
   dirtyEntries: WorkspaceDirtyEntry[]
 }
 
+type WorkspacePushMetadata = {
+  cwd: string
+  isRepo: boolean
+  currentBranch: string
+  hasUpstream: boolean
+  upstreamRemote: string
+  upstreamBranch: string
+  aheadCount: number
+  behindCount: number
+  hasCommitsToPush: boolean
+  canPush: boolean
+  suggestedUpstreamCommand: string
+}
+
 const EMPTY_WORKSPACE_DIRTY_SUMMARY: WorkspaceDirtySummary = {
   trackedModified: 0,
   staged: 0,
@@ -920,6 +934,170 @@ async function createAndSwitchWorkspaceBranch(cwd: string, branch: string): Prom
   const targetCwd = await assertGitWorkspace(cwd)
   const normalizedBranch = await assertValidBranchName(branch)
   await runGit(['switch', '-c', normalizedBranch], targetCwd)
+}
+
+async function readGitRemoteNames(cwd: string): Promise<string[]> {
+  try {
+    const output = await runGit(['remote'], cwd)
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+  } catch {
+    return []
+  }
+}
+
+function parseUpstreamRef(upstreamRef: string): { upstreamRemote: string; upstreamBranch: string } {
+  const normalized = upstreamRef.trim()
+  if (!normalized) {
+    return { upstreamRemote: '', upstreamBranch: '' }
+  }
+
+  const separatorIndex = normalized.indexOf('/')
+  if (separatorIndex === -1) {
+    return { upstreamRemote: '', upstreamBranch: normalized }
+  }
+
+  return {
+    upstreamRemote: normalized.slice(0, separatorIndex).trim(),
+    upstreamBranch: normalized.slice(separatorIndex + 1).trim(),
+  }
+}
+
+async function resolveSuggestedUpstreamRemote(cwd: string): Promise<string> {
+  const remoteNames = await readGitRemoteNames(cwd)
+  if (remoteNames.includes('origin')) {
+    return 'origin'
+  }
+  return remoteNames[0] ?? 'origin'
+}
+
+function isMissingUpstreamError(error: unknown): boolean {
+  const message = getErrorMessage(error, '').toLowerCase()
+  return message.includes('no upstream configured')
+    || message.includes('has no upstream branch')
+    || message.includes('no upstream branch')
+}
+
+async function resolveWorkspacePushMetadata(cwd: string): Promise<WorkspacePushMetadata> {
+  const targetCwd = resolve(cwd)
+  const isRepo = await isGitWorkspace(targetCwd)
+  if (!isRepo) {
+    return {
+      cwd: targetCwd,
+      isRepo: false,
+      currentBranch: '',
+      hasUpstream: false,
+      upstreamRemote: '',
+      upstreamBranch: '',
+      aheadCount: 0,
+      behindCount: 0,
+      hasCommitsToPush: false,
+      canPush: false,
+      suggestedUpstreamCommand: '',
+    }
+  }
+
+  const currentBranch = (await runGit(['branch', '--show-current'], targetCwd).catch(() => '')).trim()
+  if (!currentBranch) {
+    return {
+      cwd: targetCwd,
+      isRepo: true,
+      currentBranch: '',
+      hasUpstream: false,
+      upstreamRemote: '',
+      upstreamBranch: '',
+      aheadCount: 0,
+      behindCount: 0,
+      hasCommitsToPush: false,
+      canPush: false,
+      suggestedUpstreamCommand: '',
+    }
+  }
+
+  let upstreamRef = ''
+  try {
+    upstreamRef = (await runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], targetCwd)).trim()
+  } catch (error) {
+    if (!isMissingUpstreamError(error)) {
+      throw error
+    }
+  }
+  if (!upstreamRef) {
+    const suggestedRemote = await resolveSuggestedUpstreamRemote(targetCwd)
+    return {
+      cwd: targetCwd,
+      isRepo: true,
+      currentBranch,
+      hasUpstream: false,
+      upstreamRemote: '',
+      upstreamBranch: '',
+      aheadCount: 0,
+      behindCount: 0,
+      hasCommitsToPush: false,
+      canPush: false,
+      suggestedUpstreamCommand: `git push --set-upstream ${suggestedRemote} ${currentBranch}`,
+    }
+  }
+
+  const [aheadBehindOutput, remotes] = await Promise.all([
+    runGit(['rev-list', '--left-right', '--count', `HEAD...${upstreamRef}`], targetCwd),
+    readGitRemoteNames(targetCwd),
+  ])
+  const [aheadRaw = '0', behindRaw = '0'] = aheadBehindOutput.trim().split(/\s+/)
+  const aheadCount = Number.isFinite(Number.parseInt(aheadRaw, 10)) ? Math.max(0, Math.trunc(Number.parseInt(aheadRaw, 10))) : 0
+  const behindCount = Number.isFinite(Number.parseInt(behindRaw, 10)) ? Math.max(0, Math.trunc(Number.parseInt(behindRaw, 10))) : 0
+  const { upstreamRemote, upstreamBranch } = parseUpstreamRef(upstreamRef)
+  const fallbackRemote = remotes.includes('origin') ? 'origin' : (remotes[0] ?? 'origin')
+
+  return {
+    cwd: targetCwd,
+    isRepo: true,
+    currentBranch,
+    hasUpstream: true,
+    upstreamRemote: upstreamRemote || fallbackRemote,
+    upstreamBranch: upstreamBranch || currentBranch,
+    aheadCount,
+    behindCount,
+    hasCommitsToPush: aheadCount > 0,
+    canPush: aheadCount > 0,
+    suggestedUpstreamCommand: '',
+  }
+}
+
+async function pushWorkspaceBranch(cwd: string): Promise<{
+  currentBranch: string
+  upstreamRemote: string
+  upstreamBranch: string
+  summary: string
+}> {
+  const targetCwd = await assertGitWorkspace(cwd)
+  const metadata = await resolveWorkspacePushMetadata(targetCwd)
+  if (!metadata.currentBranch) {
+    throw new Error('Current HEAD is detached; cannot push')
+  }
+  if (!metadata.hasUpstream) {
+    throw new Error('Current branch has no upstream')
+  }
+
+  await runGit(['push'], targetCwd)
+  return {
+    currentBranch: metadata.currentBranch,
+    upstreamRemote: metadata.upstreamRemote,
+    upstreamBranch: metadata.upstreamBranch,
+    summary: `Pushed ${metadata.currentBranch} to ${metadata.upstreamRemote}/${metadata.upstreamBranch}`,
+  }
+}
+
+async function readWorkspacePushStatus(cwd: string): Promise<WorkspacePushMetadata & { blockedReasons: string[] }> {
+  const metadata = await resolveWorkspacePushMetadata(cwd)
+  const guard = await getSharedBridgeState().appServer.getWorkspaceGuard(cwd)
+  return {
+    ...metadata,
+    blockedReasons: guard.blockedReasons,
+    canPush: metadata.canPush && guard.blockedReasons.length === 0,
+  }
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -2031,6 +2209,63 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
         const branches = await readWorkspaceBranches(cwd)
         setJson(res, 200, branches)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/git/push/status') {
+        const cwd = url.searchParams.get('cwd') ?? ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing query parameter: cwd' })
+          return
+        }
+
+        const status = await readWorkspacePushStatus(cwd)
+        setJson(res, 200, status)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git/push') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing body field: cwd' })
+          return
+        }
+
+        try {
+          const guard = await appServer.getWorkspaceGuard(cwd)
+          if (guard.blockedReasons.length > 0) {
+            setJson(res, 409, {
+              error: 'Workspace push is blocked by current workspace state',
+              blockedReasons: guard.blockedReasons,
+            })
+            return
+          }
+
+          const metadata = await resolveWorkspacePushMetadata(cwd)
+          if (!metadata.currentBranch) {
+            setJson(res, 400, {
+              error: 'Current HEAD is detached; cannot push',
+            })
+            return
+          }
+          if (!metadata.hasUpstream) {
+            setJson(res, 400, {
+              error: `Current branch ${metadata.currentBranch} has no upstream`,
+              suggestedUpstreamCommand: metadata.suggestedUpstreamCommand,
+            })
+            return
+          }
+
+          const result = await pushWorkspaceBranch(cwd)
+          setJson(res, 200, {
+            ok: true,
+            ...result,
+          })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, 'Failed to push branch') })
+        }
         return
       }
 

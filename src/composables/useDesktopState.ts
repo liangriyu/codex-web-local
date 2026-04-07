@@ -8,6 +8,7 @@ import {
   fetchWorkspaceBranches,
   fetchWorkspaceDiffSnapshot,
   fetchWorkspaceGitStatus,
+  fetchWorkspacePushStatus,
   getAvailableModelIds,
   getAccountRateLimitSnapshot,
   getCurrentModelConfig,
@@ -17,6 +18,7 @@ import {
   getThreadConversationData,
   getPendingServerRequests,
   interruptThreadTurn,
+  pushWorkspaceBranch as pushWorkspaceBranchRequest,
   replyToServerRequest,
   getThreadGroups,
   renameThread,
@@ -47,6 +49,7 @@ import type {
   UiWorkspaceBranchState,
   UiWorkspaceDiffMode,
   UiWorkspaceDiffSnapshot,
+  UiWorkspacePushStatus,
   WorkspaceBranchBlockReason,
   WorkspaceModel,
 } from '../types/codex'
@@ -552,6 +555,16 @@ export function useDesktopState() {
     }
   }
 
+  function createWorkspacePushState(): WorkspaceModel['push'] {
+    return {
+      status: null,
+      isLoading: false,
+      isPushing: false,
+      lastResult: null,
+      lastError: null,
+    }
+  }
+
   function createWorkspaceModel(cwd: string): WorkspaceModel {
     return {
       cwd,
@@ -577,6 +590,7 @@ export function useDesktopState() {
         entries: [],
         fetchedAt: null,
       },
+      push: createWorkspacePushState(),
       diff: {
         selectedMode: 'unstaged',
         snapshots: {},
@@ -869,6 +883,125 @@ export function useDesktopState() {
     return refreshWorkspaceBranchState(cwd, options)
   }
 
+  async function refreshWorkspacePushStatus(
+    cwd: string,
+    options: { silent?: boolean } = {},
+  ): Promise<UiWorkspacePushStatus | null> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return null
+
+    const silent = options.silent ?? false
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      push: {
+        ...current.push,
+        isLoading: true,
+      },
+    }))
+
+    try {
+      const status = await fetchWorkspacePushStatus(normalizedCwd)
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          status,
+          isLoading: false,
+          lastError: null,
+        },
+      }))
+      return status
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Failed to load workspace push status'
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          isLoading: false,
+          lastError: message,
+        },
+      }))
+      if (!silent) {
+        error.value = message
+      }
+      return null
+    }
+  }
+
+  async function refreshSelectedWorkspacePushStatus(
+    options: { silent?: boolean } = {},
+  ): Promise<UiWorkspacePushStatus | null> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return null
+    return refreshWorkspacePushStatus(cwd, options)
+  }
+
+  async function refreshWorkspacePushStatusForCwd(
+    cwd: string,
+    options: { silent?: boolean } = {},
+  ): Promise<UiWorkspacePushStatus | null> {
+    return refreshWorkspacePushStatus(cwd, options)
+  }
+
+  async function runWorkspacePushActionForCwd(cwd: string, fallbackMessage: string): Promise<boolean> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return false
+
+    await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      push: {
+        ...current.push,
+        isPushing: true,
+        lastError: null,
+      },
+    }))
+
+    try {
+      const result = await pushWorkspaceBranchRequest(normalizedCwd)
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          lastResult: result,
+          lastError: null,
+        },
+      }))
+      await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+      return true
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : fallbackMessage
+      error.value = message
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          lastError: message,
+        },
+      }))
+      await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+      return false
+    } finally {
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          isPushing: false,
+        },
+      }))
+    }
+  }
+
+  async function pushSelectedWorkspaceBranch(): Promise<boolean> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return false
+    return runWorkspacePushActionForCwd(cwd, '当前工作区暂时不能推送到远端')
+  }
+
+  async function pushWorkspaceBranchForCwd(cwd: string): Promise<boolean> {
+    return runWorkspacePushActionForCwd(cwd, '当前工作区暂时不能推送到远端')
+  }
+
   async function refreshWorkspaceDiffTotals(cwd: string): Promise<{ additions: number; deletions: number }> {
     const normalizedCwd = cwd.trim()
     if (!normalizedCwd) return { ...EMPTY_WORKSPACE_DIFF_TOTALS }
@@ -1068,6 +1201,7 @@ export function useDesktopState() {
         await loadMessages(selectedThreadId.value, { silent: true })
       }
       await refreshWorkspaceBranchState(normalizedCwd, { includeBranches: true, silent: true })
+      await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
       return true
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : fallbackMessage
@@ -1917,6 +2051,7 @@ export function useDesktopState() {
       ])
       await loadMessages(selectedThreadId.value)
       await refreshSelectedWorkspaceBranchState({ includeBranches: false, silent: true })
+      await refreshSelectedWorkspacePushStatus({ silent: true })
       await refreshSelectedWorkspaceDiffTotals()
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
@@ -1937,6 +2072,7 @@ export function useDesktopState() {
     if (!threadId) return
 
     void refreshSelectedWorkspaceBranchState({ includeBranches: false, silent: true })
+    void refreshSelectedWorkspacePushStatus({ silent: true })
     void refreshSelectedWorkspaceDiffTotals()
 
     void loadMessages(threadId, {
@@ -2510,6 +2646,8 @@ export function useDesktopState() {
     getWorkspaceBranchStateForCwd,
     refreshSelectedWorkspaceBranchState,
     refreshWorkspaceBranchStateForCwd,
+    refreshSelectedWorkspacePushStatus,
+    refreshWorkspacePushStatusForCwd,
     refreshSelectedWorkspaceDiffTotals,
     fetchWorkspaceDiffSnapshotForMode,
     openPreferredWorkspaceDiffSnapshot,
@@ -2517,8 +2655,10 @@ export function useDesktopState() {
     setWorkspaceBaseBranch,
     switchSelectedWorkspaceBranch,
     createAndSwitchSelectedWorkspaceBranch,
+    pushSelectedWorkspaceBranch,
     switchWorkspaceBranchForCwd,
     createAndSwitchWorkspaceBranchForCwd,
+    pushWorkspaceBranchForCwd,
     setSelectedModelId,
     setSelectedReasoningEffort,
     setSelectedChatMode,

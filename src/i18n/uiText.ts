@@ -177,8 +177,8 @@ const UI_TEXT = {
     en: 'Branch',
   },
   'composer.branchMenuTitle': {
-    zh: '切换或创建分支',
-    en: 'Switch or create branch',
+    zh: '切换、创建或推送分支',
+    en: 'Switch, create, or push branch',
   },
   'composer.branchWorkspaceHint': {
     zh: '分支操作会作用于当前工作区',
@@ -203,6 +203,50 @@ const UI_TEXT = {
   'composer.branchCreate': {
     zh: '创建并切换',
     en: 'Create & switch',
+  },
+  'composer.branchPushTitle': {
+    zh: '远端推送',
+    en: 'Remote push',
+  },
+  'composer.branchPushLoading': {
+    zh: '正在读取远端推送状态...',
+    en: 'Loading remote push status...',
+  },
+  'composer.branchPushReady': {
+    zh: ({ target }) => `有提交可推送到 ${String(target)}`,
+    en: ({ target }) => `Commits are ready to push to ${String(target)}`,
+  },
+  'composer.branchPushAction': {
+    zh: ({ target }) => `推送到 ${String(target)}`,
+    en: ({ target }) => `Push to ${String(target)}`,
+  },
+  'composer.branchPushUpToDate': {
+    zh: '当前分支已与远端同步',
+    en: 'Current branch is up to date with remote',
+  },
+  'composer.branchPushMissingUpstream': {
+    zh: '当前分支尚未关联远端分支',
+    en: 'Current branch has no upstream configured',
+  },
+  'composer.branchPushSuggestedCommand': {
+    zh: ({ command }) => `请先在终端执行：${String(command)}`,
+    en: ({ command }) => `Run this in a terminal first: ${String(command)}`,
+  },
+  'composer.branchPushDetachedHead': {
+    zh: '当前 HEAD 未附着到命名分支，暂时不能推送',
+    en: 'Current HEAD is detached, so push is unavailable',
+  },
+  'composer.branchPushBehindWarning': {
+    zh: ({ count }) => `远端领先 ${String(count)} 个提交，推送可能失败`,
+    en: ({ count }) => `Remote is ahead by ${String(count)} commits, so push may fail`,
+  },
+  'composer.pushBlockedUnresolvedScope': {
+    zh: '存在未归属到当前工作区的审批请求或记录，暂时不能推送',
+    en: 'Approval requests or records are not scoped to this workspace, so push is unavailable',
+  },
+  'composer.branchPushing': {
+    zh: '推送中...',
+    en: 'Pushing...',
   },
   'composer.branchSwitching': {
     zh: '切换中...',

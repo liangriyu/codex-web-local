@@ -49,6 +49,9 @@ import type {
   UiWorkspaceDiffMode,
   UiWorkspaceDiffSnapshot,
   UiWorkspaceGitStatus,
+  UiWorkspacePushResult,
+  UiWorkspacePushStatus,
+  WorkspacePushBlockReason,
   UserInput,
 } from '../types/codex'
 
@@ -232,6 +235,57 @@ function normalizeWorkspaceDirtyEntries(value: unknown): UiWorkspaceDirtyEntry[]
       } satisfies UiWorkspaceDirtyEntry
     })
     .filter((entry): entry is UiWorkspaceDirtyEntry => entry !== null)
+}
+
+function normalizeWorkspacePushStatus(value: unknown, cwd: string): UiWorkspacePushStatus {
+  const row = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Partial<UiWorkspacePushStatus>
+    : {}
+
+  const allowedBlockedReasons: WorkspacePushBlockReason[] = [
+    'not_repo',
+    'workspace_dirty',
+    'thread_in_progress',
+    'queued_messages',
+    'pending_server_requests',
+    'persisted_server_requests',
+    'unresolved_server_request_scope',
+  ]
+  const blockedReasons = Array.isArray(row.blockedReasons)
+    ? row.blockedReasons
+      .filter((reason): reason is WorkspacePushBlockReason =>
+        typeof reason === 'string' && allowedBlockedReasons.includes(reason as WorkspacePushBlockReason),
+      )
+    : []
+
+  return {
+    cwd: typeof row.cwd === 'string' && row.cwd.trim().length > 0 ? row.cwd : cwd,
+    isRepo: row.isRepo === true,
+    currentBranch: typeof row.currentBranch === 'string' ? row.currentBranch.trim() : '',
+    hasUpstream: row.hasUpstream === true,
+    upstreamRemote: typeof row.upstreamRemote === 'string' ? row.upstreamRemote.trim() : '',
+    upstreamBranch: typeof row.upstreamBranch === 'string' ? row.upstreamBranch.trim() : '',
+    aheadCount: typeof row.aheadCount === 'number' && Number.isFinite(row.aheadCount) ? Math.max(0, Math.trunc(row.aheadCount)) : 0,
+    behindCount: typeof row.behindCount === 'number' && Number.isFinite(row.behindCount) ? Math.max(0, Math.trunc(row.behindCount)) : 0,
+    hasCommitsToPush: row.hasCommitsToPush === true,
+    canPush: row.canPush === true,
+    blockedReasons,
+    suggestedUpstreamCommand: typeof row.suggestedUpstreamCommand === 'string' ? row.suggestedUpstreamCommand.trim() : '',
+  }
+}
+
+function normalizeWorkspacePushResult(value: unknown): UiWorkspacePushResult {
+  const row = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Partial<UiWorkspacePushResult>
+    : {}
+
+  return {
+    ok: row.ok === true,
+    currentBranch: typeof row.currentBranch === 'string' ? row.currentBranch.trim() : '',
+    upstreamRemote: typeof row.upstreamRemote === 'string' ? row.upstreamRemote.trim() : '',
+    upstreamBranch: typeof row.upstreamBranch === 'string' ? row.upstreamBranch.trim() : '',
+    summary: typeof row.summary === 'string' ? row.summary.trim() : '',
+  }
 }
 
 function normalizePersistedServerRequest(value: unknown): UiPersistedServerRequest | null {
@@ -1059,6 +1113,20 @@ export async function fetchWorkspaceBranches(cwd: string): Promise<UiWorkspaceBr
   }
 }
 
+export async function fetchWorkspacePushStatus(cwd: string): Promise<UiWorkspacePushStatus | null> {
+  const normalizedCwd = cwd.trim()
+  if (!normalizedCwd) return null
+
+  const query = new URLSearchParams({ cwd: normalizedCwd })
+  const payload = await fetchJson<unknown>(
+    `/codex-api/git/push/status?${query.toString()}`,
+    `Failed to read workspace push status for ${normalizedCwd}`,
+    'git/push/status',
+  )
+
+  return normalizeWorkspacePushStatus(payload, normalizedCwd)
+}
+
 export async function switchWorkspaceBranch(cwd: string, branch: string): Promise<void> {
   const normalizedCwd = cwd.trim()
   const normalizedBranch = branch.trim()
@@ -1099,6 +1167,27 @@ export async function createAndSwitchWorkspaceBranch(cwd: string, branch: string
       },
     },
   )
+}
+
+export async function pushWorkspaceBranch(cwd: string): Promise<UiWorkspacePushResult> {
+  const normalizedCwd = cwd.trim()
+  if (!normalizedCwd) {
+    throw new Error('Workspace path is required')
+  }
+
+  const payload = await fetchJson<unknown>(
+    '/codex-api/git/push',
+    `Failed to push workspace branch for ${normalizedCwd}`,
+    'git/push',
+    {
+      method: 'POST',
+      body: {
+        cwd: normalizedCwd,
+      },
+    },
+  )
+
+  return normalizeWorkspacePushResult(payload)
 }
 
 export async function fetchWorkspaceFullDiff(cwd: string): Promise<string> {

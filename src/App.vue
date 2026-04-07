@@ -147,6 +147,7 @@
                 @refresh-branches="onRefreshWorkspaceBranches"
                 @switch-branch="onSwitchWorkspaceBranch"
                 @create-branch="onCreateWorkspaceBranch"
+                @push-branch="onPushWorkspaceBranch"
                 @dismiss-persisted-request="onDismissPersistedServerRequest"
                 @compact-context="onCompactContext" />
             </div>
@@ -255,6 +256,7 @@
                 @refresh-branches="onRefreshWorkspaceBranches"
                 @switch-branch="onSwitchWorkspaceBranch"
                 @create-branch="onCreateWorkspaceBranch"
+                @push-branch="onPushWorkspaceBranch"
                 @dismiss-persisted-request="onDismissPersistedServerRequest"
                 @interrupt="onInterruptTurn"
                 @compact-context="onCompactContext" />
@@ -344,6 +346,7 @@ const {
   compactSelectedThreadContext,
   getWorkspaceModelForCwd,
   refreshWorkspaceBranchStateForCwd,
+  refreshWorkspacePushStatusForCwd,
   refreshSelectedWorkspaceDiffTotals,
   fetchWorkspaceDiffSnapshotForMode,
   openPreferredWorkspaceDiffSnapshot,
@@ -351,8 +354,10 @@ const {
   setWorkspaceBaseBranch,
   switchSelectedWorkspaceBranch,
   createAndSwitchSelectedWorkspaceBranch,
+  pushSelectedWorkspaceBranch,
   switchWorkspaceBranchForCwd,
   createAndSwitchWorkspaceBranchForCwd,
+  pushWorkspaceBranchForCwd,
   setSelectedModelId,
   setSelectedReasoningEffort,
   setSelectedChatMode,
@@ -695,6 +700,7 @@ function onRefreshWorkspaceBranches(): void {
   const cwd = activeComposerCwd.value
   if (!cwd) return
   void refreshWorkspaceBranchStateForCwd(cwd, { includeBranches: true, silent: false })
+  void refreshWorkspacePushStatusForCwd(cwd, { silent: false })
 }
 
 async function onSwitchWorkspaceBranch(branch: string): Promise<void> {
@@ -705,6 +711,7 @@ async function onSwitchWorkspaceBranch(branch: string): Promise<void> {
     : await switchSelectedWorkspaceBranch(branch)
   if (!didSwitch) return
   previewPanel.value = null
+  await refreshWorkspacePushStatusForCwd(cwd, { silent: true })
   await refreshSelectedWorkspaceDiffTotals()
 }
 
@@ -716,7 +723,18 @@ async function onCreateWorkspaceBranch(branch: string): Promise<void> {
     : await createAndSwitchSelectedWorkspaceBranch(branch)
   if (!didCreate) return
   previewPanel.value = null
+  await refreshWorkspacePushStatusForCwd(cwd, { silent: true })
   await refreshSelectedWorkspaceDiffTotals()
+}
+
+async function onPushWorkspaceBranch(): Promise<void> {
+  const cwd = activeComposerCwd.value
+  if (!cwd) return
+  if (isHomeRoute.value) {
+    await pushWorkspaceBranchForCwd(cwd)
+    return
+  }
+  await pushSelectedWorkspaceBranch()
 }
 
 function formatQueuedAtTime(value: string): string {
