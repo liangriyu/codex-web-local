@@ -26,7 +26,7 @@ function walk(node, parents, visit) {
   }
 }
 
-test('thread conversation renders file change cards inside the message v-for branch', async () => {
+test('thread conversation renders a file change card only after the last assistant message in a turn', async () => {
   const source = await read('../src/components/content/ThreadConversation.vue')
   const { descriptor } = parseSfc(source)
   const ast = baseParse(descriptor.template.content)
@@ -48,7 +48,9 @@ test('thread conversation renders file change cards inside the message v-for bra
 
   assert.ok(fileChangeCardNode, 'expected a file-change-card article in the template')
   assert.ok(messageLoopLiNode, 'expected the card to live under the message v-for li')
-  assert.equal(directiveExp(fileChangeCardNode, 'if'), 'readMessageFileChanges(message) && !hasPendingFileChangeApproval')
+  const cardGuard = directiveExp(fileChangeCardNode, 'if')
+  assert.match(cardGuard, /messageIndex|lastAssistant|anchor|finalAssistant/i)
+  assert.notEqual(cardGuard, 'readMessageFileChanges(message) && !hasPendingFileChangeApproval')
 })
 
 test('thread conversation does not keep a thread-tail latest file-change card outside the message loop', async () => {

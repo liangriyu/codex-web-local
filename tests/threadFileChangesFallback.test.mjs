@@ -20,7 +20,7 @@ test('extracts the latest file-change summary from apply_patch session jsonl', a
   assert.equal(summary.turnId, 'turn-2')
   assert.equal(summary.files.length, 1)
   assert.equal(summary.files[0].path, 'docs/plans/obsolete.md')
-  assert.equal(summary.files[0].diff, '')
+  assert.equal(typeof summary.files[0].diff, 'string')
   assert.equal(typeof summary.totalAdditions, 'number')
   assert.equal(typeof summary.totalDeletions, 'number')
   assert.ok(summary.totalAdditions >= 0)
@@ -80,6 +80,25 @@ test('sorts turn-level timeline by createdAtIso even when session lines are out 
     timeline.map((entry) => entry.turnId),
     ['turn-1', 'turn-2'],
   )
+})
+
+test('aggregates multiple apply_patch entries from the same turn into one timeline record', async () => {
+  const parser = await loadFallbackParser()
+  const sessionJsonl = [
+    '{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-07T10:00:01.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Update File: src/a.ts\\n@@\\n-old\\n+new\\n*** End Patch"}}',
+    '{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-07T10:00:02.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Update File: src/b.ts\\n@@\\n-before\\n+after\\n*** End Patch"}}',
+  ].join('\n')
+
+  const timeline = await parser.readThreadFileChangesTimelineFromSessionJsonl(sessionJsonl)
+
+  assert.equal(timeline.length, 1)
+  assert.equal(timeline[0]?.turnId, 'turn-1')
+  assert.deepEqual(
+    timeline[0]?.files.map((file) => file.path),
+    ['src/a.ts', 'src/b.ts'],
+  )
+  assert.match(timeline[0]?.files[0]?.diff ?? '', /@@/)
+  assert.match(timeline[0]?.files[1]?.diff ?? '', /@@/)
 })
 
 test('returns null when session jsonl has no file-change events', async () => {

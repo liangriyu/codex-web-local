@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises'
 
 import type { UiChangedFile, UiThreadFileChangeTimeline, UiThreadTurnFileChangeRecord, UiTurnFileChanges } from '../types/codex.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { mergeThreadFileChangeTimelineRecords } from '../utils/threadFileChanges.ts'
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -111,6 +113,7 @@ function moveTrackedFile(
 function parseApplyPatchSummary(input: string): UiChangedFile[] {
   const filesByPath = new Map<string, UiChangedFile>()
   const order: string[] = []
+  const diffLinesByPath = new Map<string, string[]>()
   let currentPath = ''
 
   const lines = input.split('\n')
@@ -119,19 +122,28 @@ function parseApplyPatchSummary(input: string): UiChangedFile[] {
 
     if (line.startsWith('*** Add File: ')) {
       currentPath = line.slice('*** Add File: '.length).trim()
-      if (currentPath) ensureFile(filesByPath, order, currentPath)
+      if (currentPath) {
+        ensureFile(filesByPath, order, currentPath)
+        diffLinesByPath.set(currentPath, [])
+      }
       continue
     }
 
     if (line.startsWith('*** Update File: ')) {
       currentPath = line.slice('*** Update File: '.length).trim()
-      if (currentPath) ensureFile(filesByPath, order, currentPath)
+      if (currentPath) {
+        ensureFile(filesByPath, order, currentPath)
+        diffLinesByPath.set(currentPath, [])
+      }
       continue
     }
 
     if (line.startsWith('*** Delete File: ')) {
       currentPath = line.slice('*** Delete File: '.length).trim()
-      if (currentPath) ensureFile(filesByPath, order, currentPath)
+      if (currentPath) {
+        ensureFile(filesByPath, order, currentPath)
+        diffLinesByPath.set(currentPath, [])
+      }
       continue
     }
 
@@ -140,23 +152,47 @@ function parseApplyPatchSummary(input: string): UiChangedFile[] {
       continue
     }
 
-    if (!currentPath || line.startsWith('*** ') || line.startsWith('@@')) continue
+    if (!currentPath || line.startsWith('*** ')) continue
 
     const file = filesByPath.get(currentPath)
     if (!file) continue
+    const diffLines = diffLinesByPath.get(currentPath) ?? []
+
+    if (line.startsWith('@@')) {
+      diffLines.push(line)
+      diffLinesByPath.set(currentPath, diffLines)
+      continue
+    }
 
     if (line.startsWith('+')) {
       file.additions += 1
+      diffLines.push(line)
+      diffLinesByPath.set(currentPath, diffLines)
       continue
     }
 
     if (line.startsWith('-')) {
       file.deletions += 1
+      diffLines.push(line)
+      diffLinesByPath.set(currentPath, diffLines)
+      continue
+    }
+
+    if (rawLine.startsWith(' ')) {
+      diffLines.push(rawLine)
+      diffLinesByPath.set(currentPath, diffLines)
     }
   }
 
   return order
-    .map((path) => filesByPath.get(path))
+    .map((path) => {
+      const file = filesByPath.get(path)
+      if (!file) return null
+      return {
+        ...file,
+        diff: (diffLinesByPath.get(path) ?? []).join('\n').trim(),
+      }
+    })
     .filter((value): value is UiChangedFile => Boolean(value))
 }
 
@@ -237,8 +273,9 @@ export async function readThreadFileChangesTimelineFromSessionJsonl(
     return first.order - second.order
   })
 
-  const latestTurnId = timeline.at(-1)?.record.turnId ?? ''
-  return timeline.map(({ record }) => ({
+  const mergedTimeline = mergeThreadFileChangeTimelineRecords(timeline.map(({ record }) => record))
+  const latestTurnId = mergedTimeline.at(-1)?.turnId ?? ''
+  return mergedTimeline.map((record) => ({
     ...record,
     isLatestChangeTurn: record.turnId === latestTurnId,
   }))

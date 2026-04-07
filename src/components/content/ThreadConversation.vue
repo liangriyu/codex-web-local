@@ -208,7 +208,7 @@
               </div>
             </article>
             <article
-              v-if="readMessageFileChanges(message) && !hasPendingFileChangeApproval"
+              v-if="readMessageFileChanges(message) && isLastAssistantMessageInTurn(message.turnId ?? '', messageIndex) && !hasPendingFileChangeApproval"
               class="file-change-card"
             >
               <header class="file-change-card-header">
@@ -224,18 +224,23 @@
                   :key="`${message.turnId}:${change.path}`"
                   class="file-change-item"
                 >
-                  <button
-                    type="button"
-                    class="file-change-button"
-                    :disabled="!change.diff.trim().length"
-                    @click="onOpenFileDiff(change.path, change.diff, change.additions, change.deletions)"
-                  >
+                  <div class="file-change-row">
                     <span class="file-change-path">{{ displayFileChangePath(change.path) }}</span>
-                    <span class="file-change-stats">
-                      <span class="file-change-stats-add">+{{ change.additions }}</span>
-                      <span class="file-change-stats-del">-{{ change.deletions }}</span>
-                    </span>
-                  </button>
+                    <div class="file-change-row-actions">
+                      <span class="file-change-stats">
+                        <span class="file-change-stats-add">+{{ change.additions }}</span>
+                        <span class="file-change-stats-del">-{{ change.deletions }}</span>
+                      </span>
+                      <button
+                        type="button"
+                        class="file-change-view-button"
+                        :disabled="!change.diff.trim().length"
+                        @click="onOpenFileDiff(change.path, change.diff, change.additions, change.deletions)"
+                      >
+                        {{ t('threadConversation.viewFileChangeDiff') }}
+                      </button>
+                    </div>
+                  </div>
                 </li>
               </ul>
               <div
@@ -356,6 +361,17 @@ const visiblePendingRequests = computed(() =>
   props.pendingRequests.filter((request) => !(isApprovalRequest(request) && request.id === props.floatingRequestId)),
 )
 const turnFileChangesTimeline = computed(() => props.turnFileChangesTimeline?.records ?? [])
+const lastAssistantMessageIndexByTurnId = computed<Record<string, number>>(() => {
+  const byTurnId: Record<string, number> = {}
+  for (let index = 0; index < props.messages.length; index += 1) {
+    const candidate = props.messages[index]
+    if (candidate.role !== 'assistant') continue
+    const turnId = candidate.turnId?.trim() ?? ''
+    if (!turnId) continue
+    byTurnId[turnId] = index
+  }
+  return byTurnId
+})
 
 function t(key: UiTextKey, params?: Record<string, number | string>): string {
   return tUi(normalizedLanguage.value, key, params)
@@ -365,6 +381,12 @@ function readMessageFileChanges(message: UiMessage): UiThreadFileChangeTimeline[
   const turnId = message.turnId?.trim() ?? ''
   if (!turnId) return null
   return turnFileChangesTimeline.value.find((record) => record.turnId === turnId) ?? null
+}
+
+function isLastAssistantMessageInTurn(turnId: string, messageIndex: number): boolean {
+  const normalizedTurnId = turnId.trim()
+  if (!normalizedTurnId) return false
+  return lastAssistantMessageIndexByTurnId.value[normalizedTurnId] === messageIndex
 }
 
 function onUndoThreadFileChange(turnId: string): void {
@@ -930,18 +952,33 @@ onBeforeUnmount(() => {
   border-color: var(--color-border-default);
 }
 
-.file-change-button {
-  @apply w-full px-2.5 py-1.5 text-left flex items-center justify-between gap-2 transition;
+.file-change-row {
+  @apply w-full px-2.5 py-1.5 flex items-center justify-between gap-2;
   background: var(--color-bg-muted);
 }
 
-.file-change-button:hover {
-  background: var(--color-bg-muted-hover);
+.file-change-row-actions {
+  @apply flex items-center gap-2 shrink-0;
 }
 
 .file-change-path {
   @apply text-xs leading-4 truncate;
   color: var(--color-text-primary);
+}
+
+.file-change-view-button {
+  @apply rounded-md px-2 py-1 text-[11px] leading-4 transition;
+  color: var(--color-link);
+  background: var(--color-bg-subtle);
+}
+
+.file-change-view-button:hover {
+  color: var(--color-link-hover);
+  background: var(--color-bg-muted-hover);
+}
+
+.file-change-view-button:disabled {
+  @apply cursor-not-allowed opacity-60;
 }
 
 .file-change-stats {

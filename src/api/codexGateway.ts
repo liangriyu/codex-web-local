@@ -568,6 +568,56 @@ function normalizeThreadFileChangeTimelineFallback(
   }
 }
 
+function normalizeThreadFileChangeTimelinePayload(
+  threadId: string,
+  value: unknown,
+): UiThreadFileChangeTimeline | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+
+  const row = value as Partial<UiThreadFileChangeTimeline>
+  const records = Array.isArray(row.records)
+    ? row.records
+      .map((record) => {
+        if (!record || typeof record !== 'object' || Array.isArray(record)) return null
+        const item = record as Partial<UiThreadFileChangeTimeline['records'][number]>
+        const turnId = typeof item.turnId === 'string' ? item.turnId.trim() : ''
+        const files = normalizeChangedFiles(item.files)
+        if (!turnId || files.length === 0) return null
+        const totalAdditions = typeof item.totalAdditions === 'number' && Number.isFinite(item.totalAdditions)
+          ? Math.max(0, Math.trunc(item.totalAdditions))
+          : files.reduce((sum, file) => sum + file.additions, 0)
+        const totalDeletions = typeof item.totalDeletions === 'number' && Number.isFinite(item.totalDeletions)
+          ? Math.max(0, Math.trunc(item.totalDeletions))
+          : files.reduce((sum, file) => sum + file.deletions, 0)
+        return {
+          turnId,
+          files,
+          totalAdditions,
+          totalDeletions,
+          createdAtIso: typeof item.createdAtIso === 'string' && item.createdAtIso.trim().length > 0 ? item.createdAtIso.trim() : null,
+          source: item.source === 'turn_diff' || item.source === 'thread_read' || item.source === 'session_fallback'
+            ? item.source
+            : 'session_fallback',
+          canUndo: item.canUndo === true,
+          canReapply: item.canReapply === true,
+          isLatestChangeTurn: item.isLatestChangeTurn === true,
+          isReverted: item.isReverted === true,
+        }
+      })
+      .filter((record): record is UiThreadFileChangeTimeline['records'][number] => record !== null)
+    : []
+
+  if (records.length === 0) return null
+
+  return {
+    threadId,
+    records,
+    latestReversibleTurnId: typeof row.latestReversibleTurnId === 'string' && row.latestReversibleTurnId.trim().length > 0
+      ? row.latestReversibleTurnId.trim()
+      : null,
+  }
+}
+
 function normalizeWorkspaceDiffSnapshot(value: unknown, fallbackCwd: string, fallbackMode: UiWorkspaceDiffMode): UiWorkspaceDiffSnapshot {
   const row = value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Partial<UiWorkspaceDiffSnapshot>)
@@ -671,11 +721,14 @@ async function getThreadConversationDataV2(
   }, options)
   const threadReadTimeline = normalizeThreadFileChangeTimelineV2(payload)
   const threadReadFileChanges = normalizeLatestTurnFileChangesV2(payload)
-  const fileChanges = threadReadFileChanges ?? await getThreadFileChangesFallbackV2(threadId, options)
+  const fallbackTimeline = await fetchThreadFileChangesTimeline(threadId)
+  const fileChanges = threadReadFileChanges
+    ?? fallbackTimeline?.records.at(-1)
+    ?? await getThreadFileChangesFallbackV2(threadId, options)
   return {
     messages: normalizeThreadMessagesV2(payload),
     fileChanges,
-    fileChangeTimeline: threadReadTimeline ?? normalizeThreadFileChangeTimelineFallback(threadId, fileChanges),
+    fileChangeTimeline: threadReadTimeline ?? fallbackTimeline ?? normalizeThreadFileChangeTimelineFallback(threadId, fileChanges),
     inProgress: normalizeThreadInProgressV2(payload),
     activeTurnId: normalizeActiveTurnIdV2(payload),
   }
@@ -728,6 +781,25 @@ export async function fetchLatestReversibleThreadFileChange(threadId: string): P
       'thread-file-changes/latest-reversible',
     )
     return payload?.data ?? null
+  } catch (error) {
+    if (error instanceof CodexApiError && error.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+export async function fetchThreadFileChangesTimeline(threadId: string): Promise<UiThreadFileChangeTimeline | null> {
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) return null
+  try {
+    const query = new URLSearchParams({ threadId: normalizedThreadId })
+    const payload = await fetchJson<{ data?: unknown }>(
+      `/codex-api/thread-file-changes/timeline?${query.toString()}`,
+      `Failed to read file change timeline for ${normalizedThreadId}`,
+      'thread-file-changes/timeline',
+    )
+    return normalizeThreadFileChangeTimelinePayload(normalizedThreadId, payload?.data ?? null)
   } catch (error) {
     if (error instanceof CodexApiError && error.status === 404) {
       return null

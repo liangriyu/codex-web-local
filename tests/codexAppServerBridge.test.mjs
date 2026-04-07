@@ -318,6 +318,109 @@ test('thread latest reversible returns no_reversible_turn when the thread has no
   })
 })
 
+test('thread file changes timeline route aggregates same-turn session fallback entries', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'codex-web-local-thread-timeline-'))
+  const sessionPath = join(rootDir, 'session.jsonl')
+  await writeFile(sessionPath, [
+    '{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-07T10:00:01.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Update File: src/a.ts\\n@@\\n-old\\n+new\\n*** End Patch"}}',
+    '{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-07T10:00:02.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Update File: src/b.ts\\n@@\\n-before\\n+after\\n*** End Patch"}}',
+  ].join('\n'))
+
+  await withFreshBridge(async ({ middleware }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer)
+    appServer.rpc = async (_method, params) => {
+      assert.equal(_method, 'thread/read')
+      assert.equal(params?.threadId, 'thread-fallback-1')
+      return {
+        thread: {
+          id: 'thread-fallback-1',
+          cwd: rootDir,
+          path: sessionPath,
+          turns: [],
+        },
+      }
+    }
+
+    const timelineRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/thread-file-changes/timeline?threadId=thread-fallback-1',
+    )
+    assert.equal(timelineRes.statusCode, 200)
+    const timelineBody = parseBody(timelineRes)
+    assert.equal(timelineBody.data.threadId, 'thread-fallback-1')
+    assert.equal(timelineBody.data.records.length, 1)
+    assert.deepEqual(
+      timelineBody.data.records[0].files.map((file) => file.path),
+      ['src/a.ts', 'src/b.ts'],
+    )
+  })
+
+  await rm(rootDir, { recursive: true, force: true })
+})
+
+test('thread file changes timeline route merges thread/read timeline with older session fallback history', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'codex-web-local-thread-history-'))
+  const sessionPath = join(rootDir, 'session.jsonl')
+  await writeFile(sessionPath, [
+    '{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-07T10:00:01.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Update File: src/older.ts\\n@@\\n-old\\n+older\\n*** End Patch"}}',
+  ].join('\n'))
+
+  await withFreshBridge(async ({ middleware }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer)
+    appServer.rpc = async (_method, params) => {
+      assert.equal(_method, 'thread/read')
+      assert.equal(params?.threadId, 'thread-history-1')
+      return {
+        thread: {
+          id: 'thread-history-1',
+          cwd: rootDir,
+          path: sessionPath,
+          turns: params?.includeTurns
+            ? [{
+              id: 'turn-2',
+              status: 'completed',
+              items: [{
+                id: 'item-1',
+                type: 'fileChange',
+                status: 'completed',
+                changes: [{
+                  path: 'src/latest.ts',
+                  diff: 'diff --git a/src/latest.ts b/src/latest.ts\n--- a/src/latest.ts\n+++ b/src/latest.ts\n@@ -1 +1 @@\n-old\n+latest\n',
+                }],
+              }],
+            }]
+            : [],
+        },
+      }
+    }
+
+    const timelineRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/thread-file-changes/timeline?threadId=thread-history-1',
+    )
+    assert.equal(timelineRes.statusCode, 200)
+    const timelineBody = parseBody(timelineRes)
+    assert.deepEqual(
+      timelineBody.data.records.map((record) => record.turnId),
+      ['turn-1', 'turn-2'],
+    )
+    assert.deepEqual(
+      timelineBody.data.records[0].files.map((file) => file.path),
+      ['src/older.ts'],
+    )
+    assert.deepEqual(
+      timelineBody.data.records[1].files.map((file) => file.path),
+      ['src/latest.ts'],
+    )
+  })
+
+  await rm(rootDir, { recursive: true, force: true })
+})
+
 test('undo-latest rejects a dirty workspace with workspace_not_clean', async () => {
   const { rootDir, repoDir } = await createBareRemoteWorkspace()
 

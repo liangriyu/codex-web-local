@@ -724,6 +724,10 @@ const UI_TEXT = {
     zh: '重新应用本次变更',
     en: 'Reapply this change',
   },
+  'threadConversation.viewFileChangeDiff': {
+    zh: '查看 Diff',
+    en: 'View diff',
+  },
   'sidebar.expand': {
     zh: '展开侧边栏',
     en: 'Expand sidebar',

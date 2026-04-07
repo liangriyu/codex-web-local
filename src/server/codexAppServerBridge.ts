@@ -26,6 +26,8 @@ import {
   readThreadFileChangesTimelineFromSessionPath,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
 } from './threadFileChangesFallback.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { mergeThreadFileChangeTimelines } from '../utils/threadFileChanges.ts'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -1472,45 +1474,60 @@ class AppServerProcess {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return null
 
+    let threadReadTimeline: ReturnType<typeof normalizeThreadFileChangeTimelineV2> | null = null
     try {
       const payload = await this.rpc('thread/read', {
         threadId: normalizedThreadId,
         includeTurns: true,
       }) as ThreadReadResponse
-      const timeline = normalizeThreadFileChangeTimelineV2(payload)
-      if (timeline) {
-        let latestReversible = null as typeof timeline.records[number] | null
-        for (let index = timeline.records.length - 1; index >= 0; index -= 1) {
-          const candidate = timeline.records[index]
-          if (candidate.files.some((file) => file.diff.trim().length > 0)) {
-            latestReversible = candidate
-            break
-          }
-        }
-        return {
-          ...timeline,
-          latestReversibleTurnId: latestReversible?.turnId ?? null,
-          records: timeline.records.map((record) => ({
-            ...record,
-            canUndo: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) !== 'reverted',
-            canReapply: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) === 'reverted',
-          })),
-        }
-      }
+      threadReadTimeline = normalizeThreadFileChangeTimelineV2(payload)
     } catch {
-      // Fall through to session fallback.
+      threadReadTimeline = null
     }
 
     const sessionPath = await this.resolveThreadSessionPath(normalizedThreadId)
-    if (!sessionPath) return null
-    try {
-      return {
-        threadId: normalizedThreadId,
-        records: await readThreadFileChangesTimelineFromSessionPath(sessionPath),
-        latestReversibleTurnId: null,
+    let fallbackTimeline = null as Awaited<ReturnType<typeof readThreadFileChangesTimelineFromSessionPath>> | null
+    if (sessionPath) {
+      try {
+        fallbackTimeline = await readThreadFileChangesTimelineFromSessionPath(sessionPath)
+      } catch {
+        fallbackTimeline = null
       }
-    } catch {
-      return null
+    }
+
+    const mergedTimeline = threadReadTimeline
+      ? mergeThreadFileChangeTimelines(threadReadTimeline, {
+        threadId: normalizedThreadId,
+        records: fallbackTimeline ?? [],
+        latestReversibleTurnId: null,
+      })
+      : (fallbackTimeline
+        ? {
+          threadId: normalizedThreadId,
+          records: fallbackTimeline,
+          latestReversibleTurnId: null,
+        }
+        : null)
+
+    if (!mergedTimeline || mergedTimeline.records.length === 0) return null
+
+    let latestReversible = null as typeof mergedTimeline.records[number] | null
+    for (let index = mergedTimeline.records.length - 1; index >= 0; index -= 1) {
+      const candidate = mergedTimeline.records[index]
+      if (candidate.files.some((file) => file.diff.trim().length > 0)) {
+        latestReversible = candidate
+        break
+      }
+    }
+
+    return {
+      ...mergedTimeline,
+      latestReversibleTurnId: latestReversible?.turnId ?? null,
+      records: mergedTimeline.records.map((record) => ({
+        ...record,
+        canUndo: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) !== 'reverted',
+        canReapply: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) === 'reverted',
+      })),
     }
   }
 
@@ -2196,6 +2213,17 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
 
         setJson(res, 200, { data: await appServer.readThreadFileChangesFallback(threadId) })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-file-changes/timeline') {
+        const threadId = readText(url.searchParams.get('threadId'))
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing query parameter: threadId' })
+          return
+        }
+
+        setJson(res, 200, { data: await appServer.readThreadFileChangesTimeline(threadId) })
         return
       }
 

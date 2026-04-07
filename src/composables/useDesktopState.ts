@@ -59,6 +59,10 @@ import type {
 } from '../types/codex'
 import { normalizeTurnDiffToFileChanges } from '../api/normalizers/v2'
 import {
+  mergeTurnFileChangeRecords,
+  resolveThreadFileChangeTimelineUpdate,
+} from '../utils/threadFileChanges'
+import {
   loadAutoRefreshEnabled,
   isFileChangesDebugEnabled,
   loadThreadFileChangeTimelineMap,
@@ -1601,9 +1605,13 @@ export function useDesktopState() {
       records: timeline.records,
       latestReversibleTurnId: timeline.latestReversibleTurnId ?? null,
     }
+    const currentTimeline = threadFileChangesTimelineByThreadId.value[threadId] ?? null
+    const nextTimeline = resolveThreadFileChangeTimelineUpdate(currentTimeline, normalizedTimeline, {
+      authoritative: true,
+    })
     threadFileChangesTimelineByThreadId.value = {
       ...threadFileChangesTimelineByThreadId.value,
-      [threadId]: normalizedTimeline,
+      [threadId]: nextTimeline,
     }
     syncLatestReversibleTurnForThread(threadId)
     saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
@@ -1614,7 +1622,9 @@ export function useDesktopState() {
     record: UiThreadFileChangeTimeline['records'][number],
   ): void {
     const current = threadFileChangesTimelineByThreadId.value[threadId]?.records ?? []
-    const nextRecords = current.filter((entry) => entry.turnId !== record.turnId).concat(record)
+    const existing = current.find((entry) => entry.turnId === record.turnId) ?? null
+    const nextRecord = existing ? mergeTurnFileChangeRecords(existing, record) : record
+    const nextRecords = current.filter((entry) => entry.turnId !== record.turnId).concat(nextRecord)
     setThreadFileChangeTimelineForThread(threadId, {
       threadId,
       records: nextRecords,

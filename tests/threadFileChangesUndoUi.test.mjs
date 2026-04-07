@@ -85,12 +85,22 @@ test('thread conversation exposes undo/reapply actions only for the latest rever
       || fragment.includes('重新应用本次变更'),
     ),
   )
+  const viewDiffAction = findFirst(fileChangeCard, (node) =>
+    node.type === NodeTypes.ELEMENT
+    && node.tag === 'button'
+    && collectFragments(node).some((fragment) =>
+      fragment.includes('threadConversation.viewFileChangeDiff')
+      || fragment.includes('查看 Diff'),
+    ),
+  )
 
   assert.ok(undoAction, 'expected a revert action on the latest reversible file-change card')
   assert.ok(reapplyAction, 'expected a reapply action after reverting the latest reversible file-change card')
+  assert.ok(viewDiffAction, 'expected an explicit view-diff button inside the file-change card')
 
   assert.ok(uiText.includes('threadConversation.undoLatestFileChange'))
   assert.ok(uiText.includes('threadConversation.reapplyLatestFileChange'))
+  assert.ok(uiText.includes('threadConversation.viewFileChangeDiff'))
 
   const latestStateGuard = findFirst(fileChangeCard, (node) =>
     node.type === NodeTypes.ELEMENT
