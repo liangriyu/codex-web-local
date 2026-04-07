@@ -188,7 +188,7 @@ test('git push status reports upstream metadata and push succeeds', async () => 
   await rm(rootDir, { recursive: true, force: true })
 })
 
-test('git push status reports guidance when the current branch has no upstream', async () => {
+test('git push status allows first push when the current branch has no upstream', async () => {
   const { rootDir, repoDir } = await createBareRemoteWorkspace()
 
   await withFreshBridge(async ({ middleware }) => {
@@ -206,8 +206,9 @@ test('git push status reports guidance when the current branch has no upstream',
     const statusBody = parseBody(statusRes)
     assert.equal(statusBody.currentBranch, 'feature/no-upstream')
     assert.equal(statusBody.hasUpstream, false)
-    assert.equal(statusBody.canPush, false)
-    assert.equal(statusBody.hasCommitsToPush, false)
+    assert.equal(statusBody.canPush, true)
+    assert.equal(statusBody.hasCommitsToPush, true)
+    assert.equal(statusBody.willSetUpstream, true)
     assert.match(statusBody.suggestedUpstreamCommand, /git push --set-upstream origin feature\/no-upstream/)
 
     const pushRes = await invokeMiddleware(
@@ -216,10 +217,16 @@ test('git push status reports guidance when the current branch has no upstream',
       '/codex-api/git/push',
       { cwd: repoDir },
     )
-    assert.equal(pushRes.statusCode, 400)
+    assert.equal(pushRes.statusCode, 200)
     const pushBody = parseBody(pushRes)
-    assert.match(pushBody.error, /upstream/i)
-    assert.match(pushBody.suggestedUpstreamCommand, /git push --set-upstream origin feature\/no-upstream/)
+    assert.equal(pushBody.ok, true)
+    assert.equal(pushBody.currentBranch, 'feature/no-upstream')
+    assert.equal(pushBody.upstreamRemote, 'origin')
+    assert.equal(pushBody.upstreamBranch, 'feature/no-upstream')
+    assert.equal(pushBody.createdUpstream, true)
+
+    const upstream = (await runGit(repoDir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])).trim()
+    assert.equal(upstream, 'origin/feature/no-upstream')
   })
 
   await rm(rootDir, { recursive: true, force: true })

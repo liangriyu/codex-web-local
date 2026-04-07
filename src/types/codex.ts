@@ -370,6 +370,7 @@ export type UiWorkspacePushStatus = {
   isRepo: boolean
   currentBranch: string
   hasUpstream: boolean
+  willSetUpstream: boolean
   upstreamRemote: string
   upstreamBranch: string
   aheadCount: number
@@ -385,6 +386,7 @@ export type UiWorkspacePushResult = {
   currentBranch: string
   upstreamRemote: string
   upstreamBranch: string
+  createdUpstream: boolean
   summary: string
 }
 

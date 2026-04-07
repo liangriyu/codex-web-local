@@ -675,6 +675,9 @@ const branchPushSummary = computed(() => {
   if (!status.currentBranch) {
     return tUi(normalizedLanguage.value, 'composer.branchPushDetachedHead')
   }
+  if (status.willSetUpstream === true) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushReady', { target: `${status.upstreamRemote || 'origin'}/${status.currentBranch}` })
+  }
   if (!status.hasUpstream) {
     return tUi(normalizedLanguage.value, 'composer.branchPushMissingUpstream')
   }
@@ -694,6 +697,12 @@ const branchPushCommand = computed(() => {
   return tUi(normalizedLanguage.value, 'composer.branchPushSuggestedCommand', { command })
 })
 const branchPushActionLabel = computed(() => {
+  const status = branchPushStatus.value
+  if (status?.willSetUpstream === true) {
+    return tUi(normalizedLanguage.value, 'composer.branchPushSetUpstreamAction', {
+      target: `${status.upstreamRemote || 'origin'}/${status.currentBranch || currentBranchName.value || tUi(normalizedLanguage.value, 'composer.branch')}`,
+    })
+  }
   const target = branchPushTarget.value
   return tUi(normalizedLanguage.value, 'composer.branchPushAction', {
     target: target || currentBranchName.value || tUi(normalizedLanguage.value, 'composer.branch'),
@@ -701,12 +710,15 @@ const branchPushActionLabel = computed(() => {
 })
 const shouldShowPushButton = computed(() => {
   const status = branchPushStatus.value
-  return Boolean(status?.hasUpstream && status.hasCommitsToPush)
+  if (!status) return false
+  if (status.willSetUpstream === true) return true
+  return Boolean(status.hasUpstream && status.hasCommitsToPush)
 })
 const canTriggerBranchPush = computed(() => {
   const status = branchPushStatus.value
-  if (!status?.hasUpstream) return false
-  if (!status.hasCommitsToPush) return false
+  if (!status) return false
+  if (status.willSetUpstream !== true && !status.hasUpstream) return false
+  if (status.willSetUpstream !== true && !status.hasCommitsToPush) return false
   return props.disabled !== true
     && isBranchSwitching.value === false
     && isBranchPushing.value === false

@@ -393,6 +393,7 @@ type WorkspacePushMetadata = {
   isRepo: boolean
   currentBranch: string
   hasUpstream: boolean
+  willSetUpstream: boolean
   upstreamRemote: string
   upstreamBranch: string
   aheadCount: number
@@ -1042,6 +1043,7 @@ async function resolveWorkspacePushMetadata(cwd: string): Promise<WorkspacePushM
       isRepo: false,
       currentBranch: '',
       hasUpstream: false,
+      willSetUpstream: false,
       upstreamRemote: '',
       upstreamBranch: '',
       aheadCount: 0,
@@ -1059,6 +1061,7 @@ async function resolveWorkspacePushMetadata(cwd: string): Promise<WorkspacePushM
       isRepo: true,
       currentBranch: '',
       hasUpstream: false,
+      willSetUpstream: false,
       upstreamRemote: '',
       upstreamBranch: '',
       aheadCount: 0,
@@ -1084,12 +1087,13 @@ async function resolveWorkspacePushMetadata(cwd: string): Promise<WorkspacePushM
       isRepo: true,
       currentBranch,
       hasUpstream: false,
-      upstreamRemote: '',
-      upstreamBranch: '',
+      willSetUpstream: true,
+      upstreamRemote: suggestedRemote,
+      upstreamBranch: currentBranch,
       aheadCount: 0,
       behindCount: 0,
-      hasCommitsToPush: false,
-      canPush: false,
+      hasCommitsToPush: true,
+      canPush: true,
       suggestedUpstreamCommand: `git push --set-upstream ${suggestedRemote} ${currentBranch}`,
     }
   }
@@ -1109,6 +1113,7 @@ async function resolveWorkspacePushMetadata(cwd: string): Promise<WorkspacePushM
     isRepo: true,
     currentBranch,
     hasUpstream: true,
+    willSetUpstream: false,
     upstreamRemote: upstreamRemote || fallbackRemote,
     upstreamBranch: upstreamBranch || currentBranch,
     aheadCount,
@@ -1123,6 +1128,7 @@ async function pushWorkspaceBranch(cwd: string): Promise<{
   currentBranch: string
   upstreamRemote: string
   upstreamBranch: string
+  createdUpstream: boolean
   summary: string
 }> {
   const targetCwd = await assertGitWorkspace(cwd)
@@ -1130,16 +1136,25 @@ async function pushWorkspaceBranch(cwd: string): Promise<{
   if (!metadata.currentBranch) {
     throw new Error('Current HEAD is detached; cannot push')
   }
-  if (!metadata.hasUpstream) {
-    throw new Error('Current branch has no upstream')
+  if (metadata.hasUpstream) {
+    await runGit(['push'], targetCwd)
+    return {
+      currentBranch: metadata.currentBranch,
+      upstreamRemote: metadata.upstreamRemote,
+      upstreamBranch: metadata.upstreamBranch,
+      createdUpstream: false,
+      summary: `Pushed ${metadata.currentBranch} to ${metadata.upstreamRemote}/${metadata.upstreamBranch}`,
+    }
   }
 
-  await runGit(['push'], targetCwd)
+  const targetRemote = metadata.upstreamRemote || await resolveSuggestedUpstreamRemote(targetCwd)
+  await runGit(['push', '--set-upstream', targetRemote, metadata.currentBranch], targetCwd)
   return {
     currentBranch: metadata.currentBranch,
-    upstreamRemote: metadata.upstreamRemote,
-    upstreamBranch: metadata.upstreamBranch,
-    summary: `Pushed ${metadata.currentBranch} to ${metadata.upstreamRemote}/${metadata.upstreamBranch}`,
+    upstreamRemote: targetRemote,
+    upstreamBranch: metadata.currentBranch,
+    createdUpstream: true,
+    summary: `Pushed ${metadata.currentBranch} to ${targetRemote}/${metadata.currentBranch} and set upstream`,
   }
 }
 
@@ -2499,13 +2514,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           if (!metadata.currentBranch) {
             setJson(res, 400, {
               error: 'Current HEAD is detached; cannot push',
-            })
-            return
-          }
-          if (!metadata.hasUpstream) {
-            setJson(res, 400, {
-              error: `Current branch ${metadata.currentBranch} has no upstream`,
-              suggestedUpstreamCommand: metadata.suggestedUpstreamCommand,
             })
             return
           }

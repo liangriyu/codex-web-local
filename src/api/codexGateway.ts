@@ -265,6 +265,7 @@ function normalizeWorkspacePushStatus(value: unknown, cwd: string): UiWorkspaceP
     isRepo: row.isRepo === true,
     currentBranch: typeof row.currentBranch === 'string' ? row.currentBranch.trim() : '',
     hasUpstream: row.hasUpstream === true,
+    willSetUpstream: row.willSetUpstream === true,
     upstreamRemote: typeof row.upstreamRemote === 'string' ? row.upstreamRemote.trim() : '',
     upstreamBranch: typeof row.upstreamBranch === 'string' ? row.upstreamBranch.trim() : '',
     aheadCount: typeof row.aheadCount === 'number' && Number.isFinite(row.aheadCount) ? Math.max(0, Math.trunc(row.aheadCount)) : 0,
@@ -286,6 +287,7 @@ function normalizeWorkspacePushResult(value: unknown): UiWorkspacePushResult {
     currentBranch: typeof row.currentBranch === 'string' ? row.currentBranch.trim() : '',
     upstreamRemote: typeof row.upstreamRemote === 'string' ? row.upstreamRemote.trim() : '',
     upstreamBranch: typeof row.upstreamBranch === 'string' ? row.upstreamBranch.trim() : '',
+    createdUpstream: row.createdUpstream === true,
     summary: typeof row.summary === 'string' ? row.summary.trim() : '',
   }
 }

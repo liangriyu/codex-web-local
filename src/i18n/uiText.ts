@@ -220,6 +220,10 @@ const UI_TEXT = {
     zh: ({ target }) => `推送到 ${String(target)}`,
     en: ({ target }) => `Push to ${String(target)}`,
   },
+  'composer.branchPushSetUpstreamAction': {
+    zh: ({ target }) => `推送并关联 ${String(target)}`,
+    en: ({ target }) => `Push and track ${String(target)}`,
+  },
   'composer.branchPushUpToDate': {
     zh: '当前分支已与远端同步',
     en: 'Current branch is up to date with remote',

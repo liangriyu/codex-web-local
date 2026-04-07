@@ -16,6 +16,8 @@ test('workspace push state is wired through types, gateway, desktop state, app, 
 
   assert.match(types, /export type UiWorkspacePushStatus = \{/)
   assert.match(types, /export type UiWorkspacePushResult = \{/)
+  assert.match(types, /willSetUpstream: boolean/)
+  assert.match(types, /createdUpstream: boolean/)
   assert.match(types, /export type WorkspacePushState = \{/)
   assert.match(types, /push: WorkspacePushState/)
 
@@ -43,10 +45,12 @@ test('workspace push state is wired through types, gateway, desktop state, app, 
   assert.match(composer, /thread-composer-branch-push/)
   assert.match(composer, /thread-composer-branch-push-button/)
   assert.match(composer, /thread-composer-branch-push-command/)
+  assert.match(composer, /status\.willSetUpstream === true/)
 
   assert.match(uiText, /'composer\.branchPushTitle'/)
   assert.match(uiText, /'composer\.branchPushLoading'/)
   assert.match(uiText, /'composer\.branchPushAction'/)
+  assert.match(uiText, /'composer\.branchPushSetUpstreamAction'/)
   assert.match(uiText, /'composer\.branchPushing'/)
   assert.match(uiText, /'composer\.branchPushUpToDate'/)
   assert.match(uiText, /'composer\.branchPushMissingUpstream'/)
