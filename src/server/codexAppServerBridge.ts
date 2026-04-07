@@ -524,6 +524,26 @@ function summarizeWorkspaceDirtyEntries(entries: WorkspaceDirtyEntry[]): Workspa
   return summary
 }
 
+async function readWorkspaceSubmodulePaths(cwd: string): Promise<Set<string>> {
+  try {
+    const output = await runGit(['submodule', 'status', '--recursive'], cwd)
+    const paths = new Set<string>()
+    for (const rawLine of output.split('\n')) {
+      const line = rawLine.trim()
+      if (!line) continue
+      const match = line.match(/^[+\-U ]?[0-9a-f]{40}\s+(.+?)(?:\s+\(.*\))?$/iu)
+      if (!match) continue
+      const path = match[1]?.trim()
+      if (path) {
+        paths.add(normalizeStatusPathSegment(path))
+      }
+    }
+    return paths
+  } catch {
+    return new Set<string>()
+  }
+}
+
 async function collectWorkspaceChanges(cwd: string): Promise<WorkspaceFileChange[]> {
   const targetCwd = resolve(cwd)
   await runGit(['rev-parse', '--is-inside-work-tree'], targetCwd)
@@ -907,11 +927,13 @@ async function readWorkspaceGitStatus(cwd: string): Promise<WorkspaceGitStatus> 
     }
   }
 
-  const [statusOutput, branchOutput] = await Promise.all([
-    runGit(['status', '--porcelain=v1', '-uall'], targetCwd),
+  const [statusOutput, branchOutput, submodulePaths] = await Promise.all([
+    runGit(['status', '--porcelain=v1', '-uall', '--ignore-submodules=dirty'], targetCwd),
     runGit(['branch', '--show-current'], targetCwd).catch(() => ''),
+    readWorkspaceSubmodulePaths(targetCwd),
   ])
   const dirtyEntries = parseWorkspaceDirtyEntries(statusOutput)
+    .filter((entry) => !submodulePaths.has(entry.path))
 
   return {
     cwd: targetCwd,

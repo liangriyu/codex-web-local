@@ -90,6 +90,55 @@ async function createBareRemoteWorkspace() {
   return { rootDir, remoteDir, repoDir }
 }
 
+async function createWorkspaceWithDirtySubmodule() {
+  const rootDir = await mkdtemp(join(tmpdir(), 'codex-web-local-submodule-'))
+  const submoduleRepoDir = join(rootDir, 'streamget-repo')
+  const parentRepoDir = join(rootDir, 'parent-repo')
+
+  await runGit(rootDir, ['init', submoduleRepoDir])
+  await runGit(submoduleRepoDir, ['config', 'user.name', 'Codex Test'])
+  await runGit(submoduleRepoDir, ['config', 'user.email', 'codex@example.com'])
+  await writeFile(join(submoduleRepoDir, 'README.md'), 'submodule base\n')
+  await runGit(submoduleRepoDir, ['add', 'README.md'])
+  await runGit(submoduleRepoDir, ['commit', '-m', 'init submodule'])
+
+  await runGit(rootDir, ['init', parentRepoDir])
+  await runGit(parentRepoDir, ['config', 'user.name', 'Codex Test'])
+  await runGit(parentRepoDir, ['config', 'user.email', 'codex@example.com'])
+  await runGit(parentRepoDir, ['-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleRepoDir, 'src/streamget'])
+  await runGit(parentRepoDir, ['commit', '-m', 'add submodule'])
+
+  await writeFile(join(parentRepoDir, 'src/streamget/README.md'), 'submodule dirty change\n')
+
+  return { rootDir, parentRepoDir }
+}
+
+async function createWorkspaceWithMovedSubmoduleHead() {
+  const rootDir = await mkdtemp(join(tmpdir(), 'codex-web-local-submodule-head-'))
+  const submoduleRepoDir = join(rootDir, 'streamget-repo')
+  const parentRepoDir = join(rootDir, 'parent-repo')
+
+  await runGit(rootDir, ['init', submoduleRepoDir])
+  await runGit(submoduleRepoDir, ['config', 'user.name', 'Codex Test'])
+  await runGit(submoduleRepoDir, ['config', 'user.email', 'codex@example.com'])
+  await writeFile(join(submoduleRepoDir, 'README.md'), 'submodule base\n')
+  await runGit(submoduleRepoDir, ['add', 'README.md'])
+  await runGit(submoduleRepoDir, ['commit', '-m', 'init submodule'])
+
+  await runGit(rootDir, ['init', parentRepoDir])
+  await runGit(parentRepoDir, ['config', 'user.name', 'Codex Test'])
+  await runGit(parentRepoDir, ['config', 'user.email', 'codex@example.com'])
+  await runGit(parentRepoDir, ['-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleRepoDir, 'src/streamget'])
+  await runGit(parentRepoDir, ['commit', '-m', 'add submodule'])
+
+  const submoduleWorktreeDir = join(parentRepoDir, 'src/streamget')
+  await writeFile(join(submoduleWorktreeDir, 'HEAD.txt'), 'next commit\n')
+  await runGit(submoduleWorktreeDir, ['add', 'HEAD.txt'])
+  await runGit(submoduleWorktreeDir, ['commit', '-m', 'advance submodule'])
+
+  return { rootDir, parentRepoDir }
+}
+
 async function invokeMiddleware(middleware, method, url, body = undefined) {
   const req = body === undefined
     ? { method, url }
@@ -281,6 +330,68 @@ test('git push is blocked when the workspace is dirty', async () => {
     assert.equal(pushBody.error, 'Workspace push is blocked by current workspace state')
     assert.ok(Array.isArray(pushBody.blockedReasons))
     assert.ok(pushBody.blockedReasons.includes('workspace_dirty'))
+  })
+
+  await rm(rootDir, { recursive: true, force: true })
+})
+
+test('branch actions ignore dirty submodule working trees when the superproject itself is clean', async () => {
+  const { rootDir, parentRepoDir } = await createWorkspaceWithDirtySubmodule()
+
+  await withFreshBridge(async ({ middleware }) => {
+    const statusRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      `/codex-api/git/status?cwd=${encodeURIComponent(parentRepoDir)}`,
+    )
+    assert.equal(statusRes.statusCode, 200)
+    const statusBody = parseBody(statusRes)
+    assert.equal(statusBody.isDirty, false)
+    assert.deepEqual(statusBody.dirtyEntries, [])
+
+    const createRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/git/branch/create-and-switch',
+      { cwd: parentRepoDir, branch: 'feat/submodule-safe' },
+    )
+    assert.equal(createRes.statusCode, 200)
+    const createBody = parseBody(createRes)
+    assert.equal(createBody.ok, true)
+
+    const currentBranch = (await runGit(parentRepoDir, ['branch', '--show-current'])).trim()
+    assert.equal(currentBranch, 'feat/submodule-safe')
+  })
+
+  await rm(rootDir, { recursive: true, force: true })
+})
+
+test('branch actions ignore submodule gitlink changes when the only modified path is a submodule', async () => {
+  const { rootDir, parentRepoDir } = await createWorkspaceWithMovedSubmoduleHead()
+
+  await withFreshBridge(async ({ middleware }) => {
+    const statusRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      `/codex-api/git/status?cwd=${encodeURIComponent(parentRepoDir)}`,
+    )
+    assert.equal(statusRes.statusCode, 200)
+    const statusBody = parseBody(statusRes)
+    assert.equal(statusBody.isDirty, false)
+    assert.deepEqual(statusBody.dirtyEntries, [])
+
+    const switchRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/git/branch/create-and-switch',
+      { cwd: parentRepoDir, branch: 'feat/submodule-gitlink-safe' },
+    )
+    assert.equal(switchRes.statusCode, 200)
+    const switchBody = parseBody(switchRes)
+    assert.equal(switchBody.ok, true)
+
+    const currentBranch = (await runGit(parentRepoDir, ['branch', '--show-current'])).trim()
+    assert.equal(currentBranch, 'feat/submodule-gitlink-safe')
   })
 
   await rm(rootDir, { recursive: true, force: true })
