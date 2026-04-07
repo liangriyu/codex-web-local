@@ -207,25 +207,23 @@
                 </article>
               </div>
             </article>
-          </div>
-        </div>
-      </li>
-      <li v-if="fileChanges && fileChanges.files.length > 0 && !hasPendingFileChangeApproval" class="conversation-item conversation-item-request">
-        <div class="message-row">
-          <div class="message-stack">
-            <article class="file-change-card">
+            <article
+              v-if="readMessageFileChanges(message) && !hasPendingFileChangeApproval"
+              class="file-change-card"
+            >
               <header class="file-change-card-header">
                 <p class="file-change-card-title">
-                  {{ fileChanges.files.length }} 个文件已更改
-                  <span class="file-change-stats-add">+{{ fileChanges.totalAdditions }}</span>
-                  <span class="file-change-stats-del">-{{ fileChanges.totalDeletions }}</span>
+                  {{ readMessageFileChanges(message)?.files.length }} 个文件已更改
+                  <span class="file-change-stats-add">+{{ readMessageFileChanges(message)?.totalAdditions ?? 0 }}</span>
+                  <span class="file-change-stats-del">-{{ readMessageFileChanges(message)?.totalDeletions ?? 0 }}</span>
                 </p>
-                <button type="button" class="file-change-header-action" @click="onOpenWorkspaceDiff">
-                  完整 Diff
-                </button>
               </header>
               <ul class="file-change-list">
-                <li v-for="change in fileChanges.files" :key="`${fileChanges.turnId}:${change.path}`" class="file-change-item">
+                <li
+                  v-for="change in readMessageFileChanges(message)?.files ?? []"
+                  :key="`${message.turnId}:${change.path}`"
+                  class="file-change-item"
+                >
                   <button
                     type="button"
                     class="file-change-button"
@@ -240,6 +238,27 @@
                   </button>
                 </li>
               </ul>
+              <div
+                v-if="readMessageFileChanges(message)?.canUndo || readMessageFileChanges(message)?.canReapply"
+                class="file-change-actions"
+              >
+                <button
+                  v-if="readMessageFileChanges(message)?.canUndo"
+                  type="button"
+                  class="file-change-action-button"
+                  @click="onUndoThreadFileChange(message.turnId ?? '')"
+                >
+                  {{ t('threadConversation.undoLatestFileChange') }}
+                </button>
+                <button
+                  v-if="readMessageFileChanges(message)?.canReapply"
+                  type="button"
+                  class="file-change-action-button"
+                  @click="onReapplyThreadFileChange(message.turnId ?? '')"
+                >
+                  {{ t('threadConversation.reapplyLatestFileChange') }}
+                </button>
+              </div>
             </article>
           </div>
         </div>
@@ -260,7 +279,13 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, useSlots, watch } from 'vue'
-import type { ThreadScrollState, UiMessage, UiServerRequest, UiTurnFileChanges } from '../../types/codex'
+import type {
+  ThreadScrollState,
+  UiMessage,
+  UiServerRequest,
+  UiThreadFileChangeTimeline,
+  UiTurnFileChanges,
+} from '../../types/codex'
 import { tUi, type UiLanguage, type UiTextKey } from '../../i18n/uiText'
 import IconTablerCheck from '../icons/IconTablerCheck.vue'
 import IconTablerCopy from '../icons/IconTablerCopy.vue'
@@ -290,6 +315,7 @@ const props = defineProps<{
   activeThreadId: string
   projectCwd: string
   scrollState: ThreadScrollState | null
+  turnFileChangesTimeline: UiThreadFileChangeTimeline | null
   fileChanges: UiTurnFileChanges | null
   uiLanguage?: UiLanguage
   isThinkingIndicatorVisible?: boolean
@@ -302,6 +328,8 @@ const emit = defineEmits<{
   openFileReference: [payload: { path: string; line: number | null }]
   openFileDiff: [payload: { path: string; diff: string; additions: number; deletions: number }]
   openWorkspaceDiff: []
+  'undo-thread-file-change': [turnId: string]
+  'reapply-thread-file-change': [turnId: string]
 }>()
 
 const slots = useSlots()
@@ -327,9 +355,28 @@ const hasPrependSlot = computed(() => Boolean(slots.prepend))
 const visiblePendingRequests = computed(() =>
   props.pendingRequests.filter((request) => !(isApprovalRequest(request) && request.id === props.floatingRequestId)),
 )
+const turnFileChangesTimeline = computed(() => props.turnFileChangesTimeline?.records ?? [])
 
 function t(key: UiTextKey, params?: Record<string, number | string>): string {
   return tUi(normalizedLanguage.value, key, params)
+}
+
+function readMessageFileChanges(message: UiMessage): UiThreadFileChangeTimeline['records'][number] | null {
+  const turnId = message.turnId?.trim() ?? ''
+  if (!turnId) return null
+  return turnFileChangesTimeline.value.find((record) => record.turnId === turnId) ?? null
+}
+
+function onUndoThreadFileChange(turnId: string): void {
+  const normalizedTurnId = turnId.trim()
+  if (!normalizedTurnId) return
+  emit('undo-thread-file-change', normalizedTurnId)
+}
+
+function onReapplyThreadFileChange(turnId: string): void {
+  const normalizedTurnId = turnId.trim()
+  if (!normalizedTurnId) return
+  emit('reapply-thread-file-change', normalizedTurnId)
 }
 
 type ParsedToolQuestion = {
@@ -907,6 +954,22 @@ onBeforeUnmount(() => {
 
 .file-change-stats-del {
   @apply text-[#ef4444] font-medium;
+}
+
+.file-change-actions {
+  @apply flex items-center gap-2 px-2.5 py-2 border-t;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-subtle);
+}
+
+.file-change-action-button {
+  @apply rounded-md px-2.5 py-1.5 text-xs leading-4 transition;
+  color: var(--color-text-primary);
+  background: var(--color-bg-muted);
+}
+
+.file-change-action-button:hover {
+  background: var(--color-bg-muted-hover);
 }
 
 .request-title {

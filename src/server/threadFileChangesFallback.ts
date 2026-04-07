@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 
-import type { UiChangedFile, UiTurnFileChanges } from '../types/codex.ts'
+import type { UiChangedFile, UiThreadFileChangeTimeline, UiThreadTurnFileChangeRecord, UiTurnFileChanges } from '../types/codex.ts'
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -160,18 +160,38 @@ function parseApplyPatchSummary(input: string): UiChangedFile[] {
     .filter((value): value is UiChangedFile => Boolean(value))
 }
 
-export async function readThreadFileChangesFallbackFromSessionPath(sessionPath: string): Promise<UiTurnFileChanges | null> {
-  const normalizedPath = sessionPath.trim()
-  if (!normalizedPath) return null
-  const sessionJsonl = await readFile(normalizedPath, 'utf8')
-  return readThreadFileChangesFallbackFromSessionJsonl(sessionJsonl)
+function toTimelineRecord(turnId: string, files: UiChangedFile[], createdAtIso: string | null): UiThreadTurnFileChangeRecord {
+  return {
+    turnId,
+    files,
+    totalAdditions: files.reduce((sum, file) => sum + file.additions, 0),
+    totalDeletions: files.reduce((sum, file) => sum + file.deletions, 0),
+    createdAtIso,
+    source: 'session_fallback',
+    canUndo: false,
+    canReapply: false,
+    isLatestChangeTurn: false,
+    isReverted: false,
+  }
 }
 
-export async function readThreadFileChangesFallbackFromSessionJsonl(
+function readCreatedAtIso(record: Record<string, unknown>): string | null {
+  const createdAt = readText(record.createdAt) || readText(record.timestamp)
+  return createdAt || null
+}
+
+export async function readThreadFileChangesTimelineFromSessionPath(sessionPath: string): Promise<UiThreadTurnFileChangeRecord[]> {
+  const normalizedPath = sessionPath.trim()
+  if (!normalizedPath) return []
+  const sessionJsonl = await readFile(normalizedPath, 'utf8')
+  return readThreadFileChangesTimelineFromSessionJsonl(sessionJsonl)
+}
+
+export async function readThreadFileChangesTimelineFromSessionJsonl(
   sessionJsonl: string,
-): Promise<UiTurnFileChanges | null> {
+): Promise<UiThreadTurnFileChangeRecord[]> {
   const lines = sessionJsonl.split('\n')
-  let latestSummary: UiTurnFileChanges | null = null
+  const timeline: Array<{ order: number; record: UiThreadTurnFileChangeRecord }> = []
   let lastSeenTurnId = ''
 
   for (const line of lines) {
@@ -197,13 +217,55 @@ export async function readThreadFileChangesFallbackFromSessionJsonl(
     const files = parseApplyPatchSummary(toolCall.input)
     if (files.length === 0) continue
 
-    latestSummary = {
-      turnId: toolCall.turnId || lastSeenTurnId,
-      files,
-      totalAdditions: files.reduce((sum, file) => sum + file.additions, 0),
-      totalDeletions: files.reduce((sum, file) => sum + file.deletions, 0),
-    }
+    timeline.push({
+      order: timeline.length,
+      record: toTimelineRecord(toolCall.turnId || lastSeenTurnId, files, readCreatedAtIso(record)),
+    })
   }
 
-  return latestSummary
+  timeline.sort((first, second) => {
+    const firstTime = first.record.createdAtIso ? Date.parse(first.record.createdAtIso) : Number.NaN
+    const secondTime = second.record.createdAtIso ? Date.parse(second.record.createdAtIso) : Number.NaN
+    const firstHasTime = Number.isFinite(firstTime)
+    const secondHasTime = Number.isFinite(secondTime)
+    if (firstHasTime && secondHasTime && firstTime !== secondTime) {
+      return firstTime - secondTime
+    }
+    if (firstHasTime !== secondHasTime) {
+      return firstHasTime ? -1 : 1
+    }
+    return first.order - second.order
+  })
+
+  const latestTurnId = timeline.at(-1)?.record.turnId ?? ''
+  return timeline.map(({ record }) => ({
+    ...record,
+    isLatestChangeTurn: record.turnId === latestTurnId,
+  }))
+}
+
+export async function readThreadFileChangesFallbackFromSessionPath(sessionPath: string): Promise<UiTurnFileChanges | null> {
+  const timeline = await readThreadFileChangesTimelineFromSessionPath(sessionPath)
+  const latest = timeline.at(-1)
+  if (!latest) return null
+  return {
+    turnId: latest.turnId,
+    files: latest.files,
+    totalAdditions: latest.totalAdditions,
+    totalDeletions: latest.totalDeletions,
+  }
+}
+
+export async function readThreadFileChangesFallbackFromSessionJsonl(
+  sessionJsonl: string,
+): Promise<UiTurnFileChanges | null> {
+  const timeline = await readThreadFileChangesTimelineFromSessionJsonl(sessionJsonl)
+  const latest = timeline.at(-1)
+  if (!latest) return null
+  return {
+    turnId: latest.turnId,
+    files: latest.files,
+    totalAdditions: latest.totalAdditions,
+    totalDeletions: latest.totalDeletions,
+  }
 }

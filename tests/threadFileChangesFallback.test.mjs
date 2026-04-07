@@ -27,6 +27,61 @@ test('extracts the latest file-change summary from apply_patch session jsonl', a
   assert.ok(summary.totalDeletions >= 0)
 })
 
+test('exposes a turn-level timeline instead of only the latest file-change summary', async () => {
+  const parser = await loadFallbackParser()
+
+  assert.equal(typeof parser.readThreadFileChangesTimelineFromSessionJsonl, 'function')
+
+  const sessionJsonl = await readFixture('session-apply-patch.jsonl')
+  const timeline = await parser.readThreadFileChangesTimelineFromSessionJsonl(sessionJsonl)
+
+  assert.ok(Array.isArray(timeline))
+  assert.ok(timeline.length >= 2)
+  assert.deepEqual(
+    timeline.map((entry) => entry.turnId),
+    ['turn-1', 'turn-2'],
+  )
+  assert.ok(timeline.every((entry) => Array.isArray(entry.files) && entry.files.length > 0))
+  assert.ok(timeline.every((entry) => typeof entry.createdAtIso === 'string' && entry.createdAtIso.length > 0))
+})
+
+test('orders timeline entries by time even when session jsonl lines arrive out of order', async () => {
+  const parser = await loadFallbackParser()
+  assert.equal(typeof parser.readThreadFileChangesTimelineFromSessionJsonl, 'function')
+
+  const sessionJsonl = [
+    '{"type":"response_item","turnId":"turn-late","createdAt":"2026-04-07T10:01:00.000Z","item":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\\n*** Add File: later.ts\\n+later\\n*** End Patch"}}',
+    '{"type":"response_item","turnId":"turn-early","timestamp":"2026-04-07T10:00:00.000Z","item":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\\n*** Add File: earlier.ts\\n+earlier\\n*** End Patch"}}',
+  ].join('\n')
+
+  const timeline = await parser.readThreadFileChangesTimelineFromSessionJsonl(sessionJsonl)
+
+  assert.ok(Array.isArray(timeline))
+  assert.deepEqual(
+    timeline.map((entry) => entry.turnId),
+    ['turn-early', 'turn-late'],
+  )
+  assert.deepEqual(
+    timeline.map((entry) => entry.files[0]?.path),
+    ['earlier.ts', 'later.ts'],
+  )
+})
+
+test('sorts turn-level timeline by createdAtIso even when session lines are out of order', async () => {
+  const parser = await loadFallbackParser()
+  const sessionJsonl = [
+    '{"type":"response_item","turnId":"turn-2","createdAt":"2026-04-05T01:00:02.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Add File: b.txt\\n+later\\n*** End Patch"}}',
+    '{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-05T01:00:01.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\\n*** Add File: a.txt\\n+earlier\\n*** End Patch"}}',
+  ].join('\n')
+
+  const timeline = await parser.readThreadFileChangesTimelineFromSessionJsonl(sessionJsonl)
+
+  assert.deepEqual(
+    timeline.map((entry) => entry.turnId),
+    ['turn-1', 'turn-2'],
+  )
+})
+
 test('returns null when session jsonl has no file-change events', async () => {
   const { readThreadFileChangesFallbackFromSessionJsonl } = await loadFallbackParser()
   const sessionJsonl = await readFixture('session-no-file-change.jsonl')

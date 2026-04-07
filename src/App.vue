@@ -158,6 +158,7 @@
                 <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages"
                   :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
                   :project-cwd="selectedThread?.cwd ?? ''"
+                  :turn-file-changes-timeline="selectedThreadFileChangeTimeline"
                   :file-changes="selectedThreadFileChanges"
                   :floating-request-id="selectedPrimaryApprovalRequestId"
                   :ui-language="uiLanguage"
@@ -167,7 +168,9 @@
                   @respond-server-request="onRespondServerRequest"
                   @open-file-reference="onOpenFileReference"
                   @open-file-diff="onOpenFileDiff"
-                  @open-workspace-diff="onOpenWorkspaceDiff">
+                  @open-workspace-diff="onOpenWorkspaceDiff"
+                  @undo-thread-file-change="onUndoThreadFileChange"
+                  @reapply-thread-file-change="onReapplyThreadFileChange">
                   <template #prepend>
                     <SharedSessionStatusCard
                       v-if="selectedSharedSessionSnapshot"
@@ -315,6 +318,7 @@ const {
   globalPersistedServerRequests,
   selectedWorkspaceModel,
   selectedWorkspaceDiffTotals,
+  selectedThreadFileChangeTimeline,
   selectedThreadFileChanges,
   selectedQueuedMessages,
   selectedThreadContextUsage,
@@ -358,6 +362,8 @@ const {
   switchWorkspaceBranchForCwd,
   createAndSwitchWorkspaceBranchForCwd,
   pushWorkspaceBranchForCwd,
+  undoLatestThreadFileChange,
+  reapplyLatestThreadFileChange,
   setSelectedModelId,
   setSelectedReasoningEffort,
   setSelectedChatMode,
@@ -735,6 +741,14 @@ async function onPushWorkspaceBranch(): Promise<void> {
     return
   }
   await pushSelectedWorkspaceBranch()
+}
+
+async function onUndoThreadFileChange(turnId: string): Promise<void> {
+  await undoLatestThreadFileChange(turnId)
+}
+
+async function onReapplyThreadFileChange(turnId: string): Promise<void> {
+  await reapplyLatestThreadFileChange(turnId)
 }
 
 function formatQueuedAtTime(value: string): string {

@@ -8,6 +8,7 @@ import {
   fetchWorkspaceBranches,
   fetchWorkspaceDiffSnapshot,
   fetchWorkspaceGitStatus,
+  fetchLatestReversibleThreadFileChange,
   fetchWorkspacePushStatus,
   getAvailableModelIds,
   getAccountRateLimitSnapshot,
@@ -22,11 +23,13 @@ import {
   replyToServerRequest,
   getThreadGroups,
   renameThread,
+  reapplyLatestThreadFileChange as reapplyLatestThreadFileChangeRequest,
   resumeThread,
   switchWorkspaceBranch,
   startThread,
   subscribeCodexNotifications,
   startThreadTurn,
+  undoLatestThreadFileChange as undoLatestThreadFileChangeRequest,
   type RpcNotification,
 } from '../api/codexGateway'
 import { CodexApiError } from '../api/codexErrors'
@@ -45,6 +48,7 @@ import type {
   UiServerRequest,
   UiServerRequestReply,
   UiThread,
+  UiThreadFileChangeTimeline,
   UiTurnFileChanges,
   UiWorkspaceBranchState,
   UiWorkspaceDiffMode,
@@ -57,7 +61,7 @@ import { normalizeTurnDiffToFileChanges } from '../api/normalizers/v2'
 import {
   loadAutoRefreshEnabled,
   isFileChangesDebugEnabled,
-  loadLatestFileChangesMap,
+  loadThreadFileChangeTimelineMap,
   loadWorkspaceBaseBranchMap,
   loadProjectDisplayNames,
   loadProjectOrder,
@@ -67,7 +71,7 @@ import {
   loadThreadContextUsageMap,
   loadThreadScrollStateMap,
   saveAutoRefreshEnabled,
-  saveLatestFileChangesMap,
+  saveThreadFileChangeTimelineMap,
   saveWorkspaceBaseBranchMap,
   saveProjectDisplayNames,
   saveProjectOrder,
@@ -264,7 +268,12 @@ export function useDesktopState() {
   const pendingServerRequestsByThreadId = ref<Record<string, UiServerRequest[]>>({})
   const persistedServerRequestsByThreadId = ref<Record<string, UiPersistedServerRequest[]>>({})
   const sharedSessionSnapshots = ref<UiSharedSessionSnapshot[]>([])
-  const latestFileChangesByThreadId = ref<Record<string, UiTurnFileChanges>>(loadLatestFileChangesMap())
+  const threadFileChangesTimelineByThreadId = ref<Record<string, UiThreadFileChangeTimeline>>(loadThreadFileChangeTimelineMap())
+  const latestReversibleTurnByThreadId = ref<Record<string, string>>(Object.fromEntries(
+    Object.entries(threadFileChangesTimelineByThreadId.value)
+      .map(([threadId, timeline]) => [threadId, timeline.latestReversibleTurnId ?? ''])
+      .filter((entry) => entry[1].length > 0),
+  ))
   const queuedMessagesByThreadId = ref<Record<string, QueuedMessageState[]>>({})
   const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>(loadThreadContextUsageMap())
   const rateLimitUsage = ref<UiRateLimitUsage | null>(loadRateLimitUsage())
@@ -366,10 +375,20 @@ export function useDesktopState() {
       ?? sharedSessionSnapshotBySessionId.value[threadId]
       ?? null
   })
-  const selectedThreadFileChanges = computed<UiTurnFileChanges | null>(() => {
+  const selectedThreadFileChangeTimeline = computed<UiThreadFileChangeTimeline | null>(() => {
     const threadId = selectedThreadId.value
     if (!threadId) return null
-    return latestFileChangesByThreadId.value[threadId] ?? null
+    return threadFileChangesTimelineByThreadId.value[threadId] ?? null
+  })
+  const selectedThreadFileChanges = computed<UiTurnFileChanges | null>(() => {
+    const latestRecord = selectedThreadFileChangeTimeline.value?.records.at(-1)
+    if (!latestRecord) return null
+    return {
+      turnId: latestRecord.turnId,
+      files: latestRecord.files,
+      totalAdditions: latestRecord.totalAdditions,
+      totalDeletions: latestRecord.totalDeletions,
+    }
   })
   const selectedThreadContextUsage = computed<UiThreadContextUsage | null>(() => {
     const threadId = selectedThreadId.value
@@ -1381,8 +1400,8 @@ export function useDesktopState() {
     turnActivityByThreadId.value = pruneThreadStateMap(turnActivityByThreadId.value, activeThreadIds)
     turnErrorByThreadId.value = pruneThreadStateMap(turnErrorByThreadId.value, activeThreadIds)
     activeTurnIdByThreadId.value = pruneThreadStateMap(activeTurnIdByThreadId.value, activeThreadIds)
-    latestFileChangesByThreadId.value = pruneThreadStateMap(latestFileChangesByThreadId.value, activeThreadIds)
-    saveLatestFileChangesMap(latestFileChangesByThreadId.value)
+    threadFileChangesTimelineByThreadId.value = pruneThreadStateMap(threadFileChangesTimelineByThreadId.value, activeThreadIds)
+    saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
     queuedMessagesByThreadId.value = pruneThreadStateMap(queuedMessagesByThreadId.value, activeThreadIds)
     contextUsageByThreadId.value = pruneThreadStateMap(contextUsageByThreadId.value, activeThreadIds)
     saveThreadContextUsageMap(contextUsageByThreadId.value)
@@ -1554,6 +1573,145 @@ export function useDesktopState() {
     }
   }
 
+  function syncLatestReversibleTurnForThread(threadId: string): void {
+    const latestTurnId = threadFileChangesTimelineByThreadId.value[threadId]?.latestReversibleTurnId ?? ''
+    if (!latestTurnId) {
+      if (!(threadId in latestReversibleTurnByThreadId.value)) return
+      latestReversibleTurnByThreadId.value = omitKey(latestReversibleTurnByThreadId.value, threadId)
+      return
+    }
+    if (latestReversibleTurnByThreadId.value[threadId] === latestTurnId) return
+    latestReversibleTurnByThreadId.value = {
+      ...latestReversibleTurnByThreadId.value,
+      [threadId]: latestTurnId,
+    }
+  }
+
+  function setThreadFileChangeTimelineForThread(threadId: string, timeline: UiThreadFileChangeTimeline | null): void {
+    if (!threadId) return
+    if (!timeline || timeline.records.length === 0) {
+      threadFileChangesTimelineByThreadId.value = omitKey(threadFileChangesTimelineByThreadId.value, threadId)
+      syncLatestReversibleTurnForThread(threadId)
+      saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
+      return
+    }
+
+    const normalizedTimeline: UiThreadFileChangeTimeline = {
+      threadId,
+      records: timeline.records,
+      latestReversibleTurnId: timeline.latestReversibleTurnId ?? null,
+    }
+    threadFileChangesTimelineByThreadId.value = {
+      ...threadFileChangesTimelineByThreadId.value,
+      [threadId]: normalizedTimeline,
+    }
+    syncLatestReversibleTurnForThread(threadId)
+    saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
+  }
+
+  function upsertThreadFileChangesRecord(
+    threadId: string,
+    record: UiThreadFileChangeTimeline['records'][number],
+  ): void {
+    const current = threadFileChangesTimelineByThreadId.value[threadId]?.records ?? []
+    const nextRecords = current.filter((entry) => entry.turnId !== record.turnId).concat(record)
+    setThreadFileChangeTimelineForThread(threadId, {
+      threadId,
+      records: nextRecords,
+      latestReversibleTurnId: threadFileChangesTimelineByThreadId.value[threadId]?.latestReversibleTurnId ?? null,
+    })
+  }
+
+  function markLatestReversibleTurn(
+    threadId: string,
+    turnId: string,
+    options: { isReverted?: boolean } = {},
+  ): void {
+    const currentTimeline = threadFileChangesTimelineByThreadId.value[threadId]
+    if (!currentTimeline) return
+    const isReverted = options.isReverted === true
+    setThreadFileChangeTimelineForThread(threadId, {
+      threadId,
+      latestReversibleTurnId: turnId || null,
+      records: currentTimeline.records.map((record) => ({
+        ...record,
+        isLatestChangeTurn: record.turnId === turnId,
+        canUndo: record.turnId === turnId && !isReverted,
+        canReapply: record.turnId === turnId && isReverted,
+        isReverted: record.turnId === turnId ? isReverted : false,
+      })),
+    })
+  }
+
+  async function refreshLatestReversibleThreadFileChange(threadId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return
+    const latest = await fetchLatestReversibleThreadFileChange(normalizedThreadId)
+    const latestRow = asRecord(latest)
+    const turnId = typeof latestRow?.turnId === 'string' ? latestRow.turnId.trim() : ''
+    const canReapply = latestRow?.canReapply === true
+    if (!turnId) {
+      const currentTimeline = threadFileChangesTimelineByThreadId.value[normalizedThreadId]
+      if (!currentTimeline) return
+      setThreadFileChangeTimelineForThread(normalizedThreadId, {
+        threadId: normalizedThreadId,
+        latestReversibleTurnId: null,
+        records: currentTimeline.records.map((record) => ({
+          ...record,
+          canUndo: false,
+          canReapply: false,
+          isLatestChangeTurn: false,
+          isReverted: false,
+        })),
+      })
+      return
+    }
+    markLatestReversibleTurn(normalizedThreadId, turnId, { isReverted: canReapply })
+  }
+
+  async function runLatestThreadFileChangeAction(
+    turnId: string,
+    mode: 'undo' | 'reapply',
+  ): Promise<boolean> {
+    const normalizedThreadId = selectedThreadId.value.trim()
+    const normalizedTurnId = turnId.trim()
+    if (!normalizedThreadId || !normalizedTurnId) return false
+
+    const currentTimeline = threadFileChangesTimelineByThreadId.value[normalizedThreadId]
+    if (!currentTimeline || currentTimeline.latestReversibleTurnId !== normalizedTurnId) {
+      return false
+    }
+
+    error.value = ''
+    try {
+      if (mode === 'undo') {
+        await undoLatestThreadFileChangeRequest(normalizedThreadId)
+        markLatestReversibleTurn(normalizedThreadId, normalizedTurnId, { isReverted: true })
+      } else {
+        await reapplyLatestThreadFileChangeRequest(normalizedThreadId)
+        markLatestReversibleTurn(normalizedThreadId, normalizedTurnId, { isReverted: false })
+      }
+
+      await refreshSelectedWorkspaceBranchState({ includeBranches: false, silent: true })
+      await refreshSelectedWorkspaceDiffTotals()
+      await refreshSelectedWorkspacePushStatus({ silent: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error
+        ? unknownError.message
+        : `Failed to ${mode} latest thread file change`
+      return false
+    }
+  }
+
+  async function undoLatestThreadFileChange(turnId: string): Promise<boolean> {
+    return runLatestThreadFileChangeAction(turnId, 'undo')
+  }
+
+  async function reapplyLatestThreadFileChange(turnId: string): Promise<boolean> {
+    return runLatestThreadFileChangeAction(turnId, 'reapply')
+  }
+
   function upsertLiveAgentMessage(threadId: string, nextMessage: UiMessage): void {
     const previous = liveAgentMessagesByThreadId.value[threadId] ?? []
     const next = upsertMessage(previous, nextMessage)
@@ -1722,10 +1880,6 @@ export function useDesktopState() {
       setTurnSummaryForThread(startedTurn.threadId, null)
       setTurnErrorForThread(startedTurn.threadId, null)
       setThreadInProgress(startedTurn.threadId, true)
-      if (latestFileChangesByThreadId.value[startedTurn.threadId]) {
-        latestFileChangesByThreadId.value = omitKey(latestFileChangesByThreadId.value, startedTurn.threadId)
-        saveLatestFileChangesMap(latestFileChangesByThreadId.value)
-      }
       if (eventUnreadByThreadId.value[startedTurn.threadId]) {
         eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, startedTurn.threadId)
       }
@@ -1735,21 +1889,22 @@ export function useDesktopState() {
     if (turnDiffUpdate) {
       const normalized = normalizeTurnDiffToFileChanges(turnDiffUpdate.diff, turnDiffUpdate.turnId)
       if (normalized) {
-        latestFileChangesByThreadId.value = {
-          ...latestFileChangesByThreadId.value,
-          [turnDiffUpdate.threadId]: normalized,
-        }
-        saveLatestFileChangesMap(latestFileChangesByThreadId.value)
+        upsertThreadFileChangesRecord(turnDiffUpdate.threadId, {
+          turnId: normalized.turnId,
+          files: normalized.files,
+          totalAdditions: normalized.totalAdditions,
+          totalDeletions: normalized.totalDeletions,
+          createdAtIso: new Date().toISOString(),
+          source: 'turn_diff',
+          canUndo: false,
+          canReapply: false,
+          isLatestChangeTurn: true,
+          isReverted: false,
+        })
         debugFileChangesState('turn-diff-update', {
           threadId: turnDiffUpdate.threadId,
           turnId: normalized.turnId,
           fileCount: normalized.files.length,
-        })
-      } else if (latestFileChangesByThreadId.value[turnDiffUpdate.threadId]) {
-        latestFileChangesByThreadId.value = omitKey(latestFileChangesByThreadId.value, turnDiffUpdate.threadId)
-        saveLatestFileChangesMap(latestFileChangesByThreadId.value)
-        debugFileChangesState('turn-diff-clear', {
-          threadId: turnDiffUpdate.threadId,
         })
       }
     }
@@ -1811,6 +1966,7 @@ export function useDesktopState() {
         id: liveAgentMessageDelta.messageId,
         role: 'assistant',
         text: nextText,
+        turnId: activeTurnIdByThreadId.value[notificationThreadId] ?? '',
         messageType: 'agentMessage.live',
       })
     }
@@ -1972,7 +2128,7 @@ export function useDesktopState() {
         }
       }
 
-      const { messages: nextMessages, fileChanges, inProgress, activeTurnId } = await getThreadConversationData(threadId, {
+      const { messages: nextMessages, fileChanges, fileChangeTimeline, inProgress, activeTurnId } = await getThreadConversationData(threadId, {
         signal: options.signal,
       })
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
@@ -1980,22 +2136,21 @@ export function useDesktopState() {
         preserveMissing: options.silent === true,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
-      if (fileChanges) {
-        latestFileChangesByThreadId.value = {
-          ...latestFileChangesByThreadId.value,
-          [threadId]: fileChanges,
-        }
-        saveLatestFileChangesMap(latestFileChangesByThreadId.value)
+      if (fileChangeTimeline) {
+        setThreadFileChangeTimelineForThread(threadId, fileChangeTimeline)
         debugFileChangesState('load-messages:file-changes', {
           threadId,
-          turnId: fileChanges.turnId,
-          fileCount: fileChanges.files.length,
+          turnId: fileChanges?.turnId ?? fileChangeTimeline.records.at(-1)?.turnId ?? null,
+          fileCount: fileChanges?.files.length ?? fileChangeTimeline.records.at(-1)?.files.length ?? 0,
         })
+        await refreshLatestReversibleThreadFileChange(threadId)
       } else {
+        const cachedRecords = threadFileChangesTimelineByThreadId.value[threadId]?.records ?? []
+        const cachedLatest = cachedRecords.at(-1) ?? null
         debugFileChangesState('load-messages:no-file-changes', {
           threadId,
-          cachedTurnId: latestFileChangesByThreadId.value[threadId]?.turnId ?? null,
-          cachedFileCount: latestFileChangesByThreadId.value[threadId]?.files.length ?? 0,
+          cachedTurnId: cachedLatest?.turnId ?? null,
+          cachedFileCount: cachedLatest?.files.length ?? 0,
         })
       }
 
@@ -2065,9 +2220,9 @@ export function useDesktopState() {
     setSelectedThreadId(threadId)
     debugFileChangesState('select-thread', {
       threadId,
-      hasPersistedFileChanges: Boolean(latestFileChangesByThreadId.value[threadId]),
-      persistedTurnId: latestFileChangesByThreadId.value[threadId]?.turnId ?? null,
-      persistedFileCount: latestFileChangesByThreadId.value[threadId]?.files.length ?? 0,
+      hasPersistedFileChanges: Boolean(threadFileChangesTimelineByThreadId.value[threadId]?.records.length),
+      persistedTurnId: threadFileChangesTimelineByThreadId.value[threadId]?.records.at(-1)?.turnId ?? null,
+      persistedFileCount: threadFileChangesTimelineByThreadId.value[threadId]?.records.at(-1)?.files.length ?? 0,
     })
     if (!threadId) return
 
@@ -2613,6 +2768,7 @@ export function useDesktopState() {
     selectedSharedSessionSnapshot,
     selectedWorkspaceModel,
     selectedWorkspaceDiffTotals,
+    selectedThreadFileChangeTimeline,
     selectedThreadFileChanges,
     selectedQueuedMessages,
     selectedWorkspaceBranchState,
@@ -2659,6 +2815,8 @@ export function useDesktopState() {
     switchWorkspaceBranchForCwd,
     createAndSwitchWorkspaceBranchForCwd,
     pushWorkspaceBranchForCwd,
+    undoLatestThreadFileChange,
+    reapplyLatestThreadFileChange,
     setSelectedModelId,
     setSelectedReasoningEffort,
     setSelectedChatMode,

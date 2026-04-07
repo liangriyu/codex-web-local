@@ -27,6 +27,7 @@ import { CodexApiError, extractErrorMessage, normalizeCodexApiError } from './co
 import {
   normalizeActiveTurnIdV2,
   normalizeLatestTurnFileChangesV2,
+  normalizeThreadFileChangeTimelineV2,
   normalizeThreadGroupsV2,
   normalizeThreadInProgressV2,
   normalizeThreadMessagesV2,
@@ -41,6 +42,7 @@ import type {
   UiSharedSessionSnapshot,
   UiSharedSessionState,
   UiSharedSessionTimelineEntry,
+  UiThreadFileChangeTimeline,
   UiWorkspaceDirtyEntry,
   UiWorkspaceDirtyKind,
   UiWorkspaceDirtySummary,
@@ -542,6 +544,30 @@ function normalizeTurnFileChangesFallback(value: unknown): UiTurnFileChanges | n
   }
 }
 
+function normalizeThreadFileChangeTimelineFallback(
+  threadId: string,
+  value: unknown,
+): UiThreadFileChangeTimeline | null {
+  const latest = normalizeTurnFileChangesFallback(value)
+  if (!latest) return null
+  return {
+    threadId,
+    records: [{
+      turnId: latest.turnId,
+      files: latest.files,
+      totalAdditions: latest.totalAdditions,
+      totalDeletions: latest.totalDeletions,
+      createdAtIso: null,
+      source: 'session_fallback',
+      canUndo: false,
+      canReapply: false,
+      isLatestChangeTurn: true,
+      isReverted: false,
+    }],
+    latestReversibleTurnId: null,
+  }
+}
+
 function normalizeWorkspaceDiffSnapshot(value: unknown, fallbackCwd: string, fallbackMode: UiWorkspaceDiffMode): UiWorkspaceDiffSnapshot {
   const row = value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Partial<UiWorkspaceDiffSnapshot>)
@@ -632,16 +658,24 @@ async function getThreadFileChangesFallbackV2(
 async function getThreadConversationDataV2(
   threadId: string,
   options: RpcCallOptions = {},
-): Promise<{ messages: UiMessage[]; fileChanges: UiTurnFileChanges | null; inProgress: boolean; activeTurnId: string }> {
+): Promise<{
+  messages: UiMessage[]
+  fileChanges: UiTurnFileChanges | null
+  fileChangeTimeline: UiThreadFileChangeTimeline | null
+  inProgress: boolean
+  activeTurnId: string
+}> {
   const payload = await callRpc<ThreadReadResponse>('thread/read', {
     threadId,
     includeTurns: true,
   }, options)
+  const threadReadTimeline = normalizeThreadFileChangeTimelineV2(payload)
   const threadReadFileChanges = normalizeLatestTurnFileChangesV2(payload)
   const fileChanges = threadReadFileChanges ?? await getThreadFileChangesFallbackV2(threadId, options)
   return {
     messages: normalizeThreadMessagesV2(payload),
     fileChanges,
+    fileChangeTimeline: threadReadTimeline ?? normalizeThreadFileChangeTimelineFallback(threadId, fileChanges),
     inProgress: normalizeThreadInProgressV2(payload),
     activeTurnId: normalizeActiveTurnIdV2(payload),
   }
@@ -666,7 +700,13 @@ export async function getThreadMessages(threadId: string): Promise<UiMessage[]> 
 export async function getThreadConversationData(
   threadId: string,
   options: RpcCallOptions = {},
-): Promise<{ messages: UiMessage[]; fileChanges: UiTurnFileChanges | null; inProgress: boolean; activeTurnId: string }> {
+): Promise<{
+  messages: UiMessage[]
+  fileChanges: UiTurnFileChanges | null
+  fileChangeTimeline: UiThreadFileChangeTimeline | null
+  inProgress: boolean
+  activeTurnId: string
+}> {
   try {
     return await getThreadConversationDataV2(threadId, options)
   } catch (error) {
@@ -675,6 +715,51 @@ export async function getThreadConversationData(
     }
     throw normalizeCodexApiError(error, `Failed to load thread ${threadId}`, 'thread/read')
   }
+}
+
+export async function fetchLatestReversibleThreadFileChange(threadId: string): Promise<unknown | null> {
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) return null
+  try {
+    const query = new URLSearchParams({ threadId: normalizedThreadId })
+    const payload = await fetchJson<{ data?: unknown }>(
+      `/codex-api/thread-file-changes/latest-reversible?${query.toString()}`,
+      `Failed to read latest reversible file change for ${normalizedThreadId}`,
+      'thread-file-changes/latest-reversible',
+    )
+    return payload?.data ?? null
+  } catch (error) {
+    if (error instanceof CodexApiError && error.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+export async function undoLatestThreadFileChange(threadId: string): Promise<unknown> {
+  const normalizedThreadId = threadId.trim()
+  return fetchJson(
+    '/codex-api/thread-file-changes/undo-latest',
+    `Failed to undo latest file change for ${normalizedThreadId}`,
+    'thread-file-changes/undo-latest',
+    {
+      method: 'POST',
+      body: { threadId: normalizedThreadId },
+    },
+  )
+}
+
+export async function reapplyLatestThreadFileChange(threadId: string): Promise<unknown> {
+  const normalizedThreadId = threadId.trim()
+  return fetchJson(
+    '/codex-api/thread-file-changes/reapply-latest',
+    `Failed to reapply latest file change for ${normalizedThreadId}`,
+    'thread-file-changes/reapply-latest',
+    {
+      method: 'POST',
+      body: { threadId: normalizedThreadId },
+    },
+  )
 }
 
 export async function getMethodCatalog(): Promise<string[]> {

@@ -1,4 +1,12 @@
-import type { ThreadScrollState, UiChangedFile, UiRateLimitUsage, UiThreadContextUsage, UiTurnFileChanges } from '../../types/codex'
+import type {
+  ThreadScrollState,
+  UiChangedFile,
+  UiRateLimitUsage,
+  UiThreadContextUsage,
+  UiThreadFileChangeTimeline,
+  UiThreadTurnFileChangeRecord,
+  UiTurnFileChanges,
+} from '../../types/codex'
 
 const READ_STATE_STORAGE_KEY = 'codex-web-local.thread-read-state.v1'
 const SCROLL_STATE_STORAGE_KEY = 'codex-web-local.thread-scroll-state.v1'
@@ -23,6 +31,11 @@ type StoredTurnFileChangesSummary = {
   storedAt: number
 }
 
+type StoredTurnFileChangeTimeline = {
+  records: StoredTurnFileChangesSummary[]
+  latestReversibleTurnId: string | null
+}
+
 function shortenDebugId(value: string): string {
   const normalized = value.trim()
   if (normalized.length <= 8) return normalized
@@ -30,7 +43,7 @@ function shortenDebugId(value: string): string {
 }
 
 export function isFileChangesDebugEnabled(): boolean {
-  if (import.meta.env.DEV) return true
+  if (import.meta?.env?.DEV === true) return true
   if (typeof window === 'undefined') return false
   try {
     return window.localStorage.getItem(FILE_CHANGES_DEBUG_STORAGE_KEY) === '1'
@@ -176,6 +189,38 @@ function toUiTurnFileChanges(summary: StoredTurnFileChangesSummary): UiTurnFileC
   }
 }
 
+function toUiThreadTurnFileChangeRecord(summary: StoredTurnFileChangesSummary): UiThreadTurnFileChangeRecord {
+  return {
+    turnId: summary.turnId,
+    files: summary.files.map((file) => ({
+      ...file,
+      diff: '',
+    })),
+    totalAdditions: summary.totalAdditions,
+    totalDeletions: summary.totalDeletions,
+    createdAtIso: new Date(summary.storedAt).toISOString(),
+    source: 'session_fallback',
+    canUndo: false,
+    canReapply: false,
+    isLatestChangeTurn: false,
+    isReverted: false,
+  }
+}
+
+function normalizeStoredThreadFileChangeTimeline(value: unknown): StoredTurnFileChangeTimeline | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  if (!Array.isArray(row.records)) return null
+  const records = row.records
+    .map((record) => normalizeStoredTurnFileChanges(record))
+    .filter((record): record is StoredTurnFileChangesSummary => record !== null)
+  if (records.length === 0) return null
+  return {
+    records,
+    latestReversibleTurnId: typeof row.latestReversibleTurnId === 'string' ? row.latestReversibleTurnId : null,
+  }
+}
+
 function loadStoredLatestFileChangesMap(): Record<string, StoredTurnFileChangesSummary> {
   if (typeof window === 'undefined') return {}
   try {
@@ -188,6 +233,32 @@ function loadStoredLatestFileChangesMap(): Record<string, StoredTurnFileChangesS
       if (!threadId) continue
       const normalized = normalizeStoredTurnFileChanges(value)
       if (normalized) normalizedMap[threadId] = normalized
+    }
+    return normalizedMap
+  } catch {
+    return {}
+  }
+}
+
+function loadStoredThreadFileChangeTimelineMap(): Record<string, StoredTurnFileChangeTimeline> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(FILE_CHANGES_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const normalizedMap: Record<string, StoredTurnFileChangeTimeline> = {}
+    for (const [threadId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!threadId) continue
+      const normalizedTimeline = normalizeStoredThreadFileChangeTimeline(value)
+      if (normalizedTimeline) {
+        normalizedMap[threadId] = normalizedTimeline
+        continue
+      }
+      const normalizedLatest = normalizeStoredTurnFileChanges(value)
+      if (normalizedLatest) {
+        normalizedMap[threadId] = { records: [normalizedLatest], latestReversibleTurnId: null }
+      }
     }
     return normalizedMap
   } catch {
@@ -212,6 +283,22 @@ function buildStoredTurnFileChangesSummary(
   }
 }
 
+function buildStoredThreadFileChangeTimelineSummary(
+  value: UiThreadFileChangeTimeline,
+  previous: StoredTurnFileChangeTimeline | null,
+  now: number,
+): StoredTurnFileChangeTimeline {
+  const previousByTurnId = new Map((previous?.records ?? []).map((record) => [record.turnId, record]))
+  return {
+    records: value.records.map((record, index) => {
+      const existing = previousByTurnId.get(record.turnId)
+      const storedAt = existing?.storedAt ?? (now + index)
+      return buildStoredTurnFileChangesSummary(record, storedAt)
+    }),
+    latestReversibleTurnId: value.latestReversibleTurnId,
+  }
+}
+
 function buildStoredFileChangeSummaryMap(state: Record<string, UiTurnFileChanges>): Record<string, StoredTurnFileChangesSummary> {
   const previousState = loadStoredLatestFileChangesMap()
   const now = Date.now()
@@ -226,6 +313,24 @@ function buildStoredFileChangeSummaryMap(state: Record<string, UiTurnFileChanges
     .slice(0, MAX_STORED_FILE_CHANGE_THREADS)
 
   return Object.fromEntries(entries)
+}
+
+function buildStoredThreadFileChangeTimelineMap(
+  state: Record<string, UiThreadFileChangeTimeline>,
+): Record<string, StoredTurnFileChangeTimeline> {
+  const previousState = loadStoredThreadFileChangeTimelineMap()
+  const now = Date.now()
+  const entries = Object.entries(state)
+    .map(([threadId, value], index) => {
+      const previous = previousState[threadId] ?? null
+      const summary = buildStoredThreadFileChangeTimelineSummary(value, previous, now + (index * 1000))
+      const storedAt = summary.records.at(-1)?.storedAt ?? 0
+      return [threadId, summary, storedAt] as const
+    })
+    .sort((first, second) => second[2] - first[2])
+    .slice(0, MAX_STORED_FILE_CHANGE_THREADS)
+
+  return Object.fromEntries(entries.map(([threadId, summary]) => [threadId, summary]))
 }
 
 export function loadReadStateMap(): Record<string, string> {
@@ -396,6 +501,30 @@ export function loadLatestFileChangesMap(): Record<string, UiTurnFileChanges> {
   return normalizedMap
 }
 
+export function loadThreadFileChangeTimelineMap(): Record<string, UiThreadFileChangeTimeline> {
+  if (typeof window === 'undefined') return {}
+  const storedState = loadStoredThreadFileChangeTimelineMap()
+  if (Object.keys(storedState).length === 0) {
+    debugFileChangesStorage('load-timeline:miss', { storageKey: FILE_CHANGES_STORAGE_KEY })
+    return {}
+  }
+  const normalizedMap = Object.fromEntries(
+    Object.entries(storedState).map(([threadId, value]) => [threadId, {
+      threadId,
+      records: value.records.map((record, index, records) => ({
+        ...toUiThreadTurnFileChangeRecord(record),
+        isLatestChangeTurn: index === records.length - 1,
+      })),
+      latestReversibleTurnId: value.latestReversibleTurnId,
+    }]),
+  ) as Record<string, UiThreadFileChangeTimeline>
+  debugFileChangesStorage('load-timeline:hit', {
+    storageKey: FILE_CHANGES_STORAGE_KEY,
+    threadIds: Object.keys(normalizedMap).map((value) => shortenDebugId(value)),
+  })
+  return normalizedMap
+}
+
 export function saveLatestFileChangesMap(state: Record<string, UiTurnFileChanges>): void {
   if (typeof window === 'undefined') return
   try {
@@ -408,6 +537,20 @@ export function saveLatestFileChangesMap(state: Record<string, UiTurnFileChanges
     })
   } catch {
     debugFileChangesStorage('save:error', { storageKey: FILE_CHANGES_STORAGE_KEY })
+  }
+}
+
+export function saveThreadFileChangeTimelineMap(state: Record<string, UiThreadFileChangeTimeline>): void {
+  if (typeof window === 'undefined') return
+  try {
+    const storedState = buildStoredThreadFileChangeTimelineMap(state)
+    window.localStorage.setItem(FILE_CHANGES_STORAGE_KEY, JSON.stringify(storedState))
+    debugFileChangesStorage('save-timeline', {
+      storageKey: FILE_CHANGES_STORAGE_KEY,
+      threadIds: Object.keys(storedState).map((value) => shortenDebugId(value)),
+    })
+  } catch {
+    debugFileChangesStorage('save-timeline:error', { storageKey: FILE_CHANGES_STORAGE_KEY })
   }
 }
 

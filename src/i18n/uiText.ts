@@ -716,6 +716,14 @@ const UI_TEXT = {
     zh: '复制消息',
     en: 'Copy message',
   },
+  'threadConversation.undoLatestFileChange': {
+    zh: '撤销本次变更',
+    en: 'Undo this change',
+  },
+  'threadConversation.reapplyLatestFileChange': {
+    zh: '重新应用本次变更',
+    en: 'Reapply this change',
+  },
   'sidebar.expand': {
     zh: '展开侧边栏',
     en: 'Expand sidebar',

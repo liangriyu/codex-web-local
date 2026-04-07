@@ -5,7 +5,15 @@ import type {
   ThreadListResponse,
   UserInput,
 } from '../appServerDtos'
-import type { UiChangedFile, UiMessage, UiProjectGroup, UiThread, UiTurnFileChanges } from '../../types/codex'
+import type {
+  UiChangedFile,
+  UiMessage,
+  UiProjectGroup,
+  UiThread,
+  UiThreadFileChangeTimeline,
+  UiThreadTurnFileChangeRecord,
+  UiTurnFileChanges,
+} from '../../types/codex'
 
 function toIso(seconds: number): string {
   return new Date(seconds * 1000).toISOString()
@@ -42,6 +50,7 @@ function extractCodexUserRequestText(value: string): string {
 
 function parseUserMessageContent(
   itemId: string,
+  turnId: string,
   content: UserInput[] | undefined,
 ): { text: string; images: string[]; rawBlocks: UiMessage[] } {
   if (!Array.isArray(content)) return { text: '', images: [], rawBlocks: [] }
@@ -63,6 +72,7 @@ function parseUserMessageContent(
         id: `${itemId}:user-content:${index}`,
         role: 'user',
         text: '',
+        turnId,
         messageType: `userContent.${block.type}`,
         rawPayload: toRawPayload(block),
         isUnhandled: true,
@@ -77,20 +87,21 @@ function parseUserMessageContent(
   }
 }
 
-function toUiMessages(item: ThreadItem): UiMessage[] {
+function toUiMessages(item: ThreadItem, turnId: string): UiMessage[] {
   if (item.type === 'agentMessage') {
     return [
       {
         id: item.id,
         role: 'assistant',
         text: item.text,
+        turnId,
         messageType: item.type,
       },
     ]
   }
 
   if (item.type === 'userMessage') {
-    const parsed = parseUserMessageContent(item.id, item.content as UserInput[] | undefined)
+    const parsed = parseUserMessageContent(item.id, turnId, item.content as UserInput[] | undefined)
     const messages: UiMessage[] = []
     const hasRenderableUserContent = parsed.text.length > 0 || parsed.images.length > 0
 
@@ -100,6 +111,7 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
         role: 'user',
         text: parsed.text,
         images: parsed.images,
+        turnId,
         messageType: item.type,
       })
     }
@@ -192,7 +204,7 @@ export function normalizeThreadMessagesV2(payload: ThreadReadResponse): UiMessag
   for (const turn of turns) {
     const items = Array.isArray(turn.items) ? turn.items : []
     for (const item of items) {
-      messages.push(...toUiMessages(item))
+      messages.push(...toUiMessages(item, turn.id))
     }
   }
   return messages
@@ -269,16 +281,49 @@ function extractChangedFilesFromTurn(turn: { id: string; items?: ThreadItem[] })
   }
 }
 
-export function normalizeLatestTurnFileChangesV2(payload: ThreadReadResponse): UiTurnFileChanges | null {
-  const turns = Array.isArray(payload.thread.turns) ? payload.thread.turns : []
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index]
-    const changeSet = extractChangedFilesFromTurn(turn)
-    if (changeSet) {
-      return changeSet
-    }
+function toTimelineRecord(changeSet: UiTurnFileChanges, createdAtIso: string | null = null): UiThreadTurnFileChangeRecord {
+  return {
+    turnId: changeSet.turnId,
+    files: changeSet.files,
+    totalAdditions: changeSet.totalAdditions,
+    totalDeletions: changeSet.totalDeletions,
+    createdAtIso,
+    source: 'thread_read',
+    canUndo: false,
+    canReapply: false,
+    isLatestChangeTurn: false,
+    isReverted: false,
   }
-  return null
+}
+
+export function normalizeThreadFileChangeTimelineV2(payload: ThreadReadResponse): UiThreadFileChangeTimeline | null {
+  const turns = Array.isArray(payload.thread.turns) ? payload.thread.turns : []
+  const records = turns
+    .map((turn) => extractChangedFilesFromTurn(turn))
+    .filter((record): record is UiTurnFileChanges => record !== null)
+    .map((record) => toTimelineRecord(record))
+  if (records.length === 0) return null
+  const latestRecord = records.at(-1) ?? null
+  return {
+    threadId: payload.thread.id,
+    records: records.map((record) => ({
+      ...record,
+      isLatestChangeTurn: latestRecord?.turnId === record.turnId,
+    })),
+    latestReversibleTurnId: null,
+  }
+}
+
+export function normalizeLatestTurnFileChangesV2(payload: ThreadReadResponse): UiTurnFileChanges | null {
+  const timeline = normalizeThreadFileChangeTimelineV2(payload)
+  const latestRecord = timeline?.records.at(-1)
+  if (!latestRecord) return null
+  return {
+    turnId: latestRecord.turnId,
+    files: latestRecord.files,
+    totalAdditions: latestRecord.totalAdditions,
+    totalDeletions: latestRecord.totalDeletions,
+  }
 }
 
 export function normalizeTurnDiffToFileChanges(diff: string, turnId: string): UiTurnFileChanges | null {

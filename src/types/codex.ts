@@ -106,6 +106,7 @@ export type UiMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'
   text: string
+  turnId?: string
   images?: string[]
   messageType?: string
   rawPayload?: string
@@ -246,6 +247,25 @@ export type UiTurnFileChanges = {
   files: UiChangedFile[]
   totalAdditions: number
   totalDeletions: number
+}
+
+export type UiThreadTurnFileChangeRecord = {
+  turnId: string
+  files: UiChangedFile[]
+  totalAdditions: number
+  totalDeletions: number
+  createdAtIso: string | null
+  source: 'turn_diff' | 'thread_read' | 'session_fallback'
+  canUndo: boolean
+  canReapply: boolean
+  isLatestChangeTurn: boolean
+  isReverted: boolean
+}
+
+export type UiThreadFileChangeTimeline = {
+  threadId: string
+  records: UiThreadTurnFileChangeRecord[]
+  latestReversibleTurnId: string | null
 }
 
 export type UiWorkspaceDiffMode =

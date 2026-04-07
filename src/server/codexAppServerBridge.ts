@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { ThreadReadResponse } from '../api/appServerDtos.ts'
 import {
   normalizeActiveTurnIdV2,
+  normalizeThreadFileChangeTimelineV2,
   normalizeThreadInProgressV2,
   normalizeThreadMessagesV2,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
@@ -20,8 +21,11 @@ import {
   writeSharedSessionSnapshot,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
 } from './sharedSessionStore.ts'
+import {
+  readThreadFileChangesFallbackFromSessionPath,
+  readThreadFileChangesTimelineFromSessionPath,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
-import { readThreadFileChangesFallbackFromSessionPath } from './threadFileChangesFallback.ts'
+} from './threadFileChangesFallback.ts'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -119,6 +123,39 @@ function getErrorMessage(payload: unknown, fallback: string): string {
   }
 
   return fallback
+}
+
+type ThreadFileChangeActionErrorCode =
+  | 'no_reversible_turn'
+  | 'workspace_not_clean'
+  | 'patch_conflict'
+
+class ThreadFileChangeActionError extends Error {
+  readonly code: ThreadFileChangeActionErrorCode
+  readonly statusCode: number
+
+  constructor(code: ThreadFileChangeActionErrorCode, message: string, statusCode: number) {
+    super(message)
+    this.name = 'ThreadFileChangeActionError'
+    this.code = code
+    this.statusCode = statusCode
+  }
+}
+
+function isThreadFileChangeActionError(error: unknown): error is ThreadFileChangeActionError {
+  return error instanceof ThreadFileChangeActionError
+}
+
+function setThreadFileChangeActionError(
+  res: ServerResponse,
+  error: ThreadFileChangeActionError,
+): void {
+  setJson(res, error.statusCode, {
+    error: {
+      code: error.code,
+      message: error.message,
+    },
+  })
 }
 
 function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -252,6 +289,20 @@ function runGit(args: string[], cwd: string): Promise<string> {
       }
       resolve(stdout)
     })
+  })
+}
+
+function runGitWithInput(args: string[], cwd: string, input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile('git', args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const message = stderr?.trim() || error.message
+        reject(new Error(message))
+        return
+      }
+      resolve(stdout)
+    })
+    child.stdin?.end(input)
   })
 }
 
@@ -1127,6 +1178,7 @@ class AppServerProcess {
   private readonly persistedServerRequests = new Map<number, PersistedServerRequest>()
   private readonly threadCwdById = new Map<string, string>()
   private readonly threadPathById = new Map<string, string>()
+  private readonly latestThreadFileChangeStateByThreadId = new Map<string, 'applied' | 'reverted'>()
   private readonly persistedServerRequestsLedgerPath = getPersistedServerRequestsLedgerPath()
   private persistedServerRequestsLoaded: Promise<void> | null = null
   private persistedServerRequestsFlushChain: Promise<void> = Promise.resolve()
@@ -1413,6 +1465,121 @@ class AppServerProcess {
       return await readThreadFileChangesFallbackFromSessionPath(sessionPath)
     } catch {
       return null
+    }
+  }
+
+  async readThreadFileChangesTimeline(threadId: string): Promise<unknown | null> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return null
+
+    try {
+      const payload = await this.rpc('thread/read', {
+        threadId: normalizedThreadId,
+        includeTurns: true,
+      }) as ThreadReadResponse
+      const timeline = normalizeThreadFileChangeTimelineV2(payload)
+      if (timeline) {
+        let latestReversible = null as typeof timeline.records[number] | null
+        for (let index = timeline.records.length - 1; index >= 0; index -= 1) {
+          const candidate = timeline.records[index]
+          if (candidate.files.some((file) => file.diff.trim().length > 0)) {
+            latestReversible = candidate
+            break
+          }
+        }
+        return {
+          ...timeline,
+          latestReversibleTurnId: latestReversible?.turnId ?? null,
+          records: timeline.records.map((record) => ({
+            ...record,
+            canUndo: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) !== 'reverted',
+            canReapply: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) === 'reverted',
+          })),
+        }
+      }
+    } catch {
+      // Fall through to session fallback.
+    }
+
+    const sessionPath = await this.resolveThreadSessionPath(normalizedThreadId)
+    if (!sessionPath) return null
+    try {
+      return {
+        threadId: normalizedThreadId,
+        records: await readThreadFileChangesTimelineFromSessionPath(sessionPath),
+        latestReversibleTurnId: null,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async readLatestReversibleThreadFileChange(threadId: string): Promise<unknown | null> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return null
+    const timeline = await this.readThreadFileChangesTimeline(normalizedThreadId)
+    const timelineRecord = asRecord(timeline)
+    const records = Array.isArray(timelineRecord?.records) ? timelineRecord.records : []
+    const latestTurnId = readText(timelineRecord?.latestReversibleTurnId)
+    if (!latestTurnId) return null
+    const latest = records.find((record) => readText(asRecord(record)?.turnId) === latestTurnId)
+    return latest ?? null
+  }
+
+  async applyLatestReversibleThreadFileChange(threadId: string, mode: 'undo' | 'reapply'): Promise<{
+    threadId: string
+    turnId: string
+    state: 'applied' | 'reverted'
+  }> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) {
+      throw new Error('Missing threadId')
+    }
+    const cwd = await this.resolveThreadCwd(normalizedThreadId)
+    if (!cwd) {
+      throw new Error('Failed to resolve thread workspace')
+    }
+    const guard = await this.getWorkspaceGuard(cwd)
+    if (guard.blockedReasons.length > 0) {
+      throw new ThreadFileChangeActionError(
+        'workspace_not_clean',
+        `Workspace is blocked: ${guard.blockedReasons.join(', ')}`,
+        409,
+      )
+    }
+    const latest = await this.readLatestReversibleThreadFileChange(normalizedThreadId)
+    const latestRecord = asRecord(latest)
+    const turnId = readText(latestRecord?.turnId)
+    const files = Array.isArray(latestRecord?.files) ? latestRecord.files : []
+    const patchText = files
+      .map((file) => readText(asRecord(file)?.diff))
+      .filter((value) => value.length > 0)
+      .join('\n')
+      .trim()
+    if (!turnId || !patchText) {
+      throw new ThreadFileChangeActionError(
+        'no_reversible_turn',
+        'No reversible file change for thread',
+        404,
+      )
+    }
+
+    try {
+      if (mode === 'undo') {
+        await runGitWithInput(['apply', '-R', '-'], cwd, `${patchText}\n`)
+        this.latestThreadFileChangeStateByThreadId.set(normalizedThreadId, 'reverted')
+        return { threadId: normalizedThreadId, turnId, state: 'reverted' }
+      }
+
+      await runGitWithInput(['apply', '-'], cwd, `${patchText}\n`)
+      this.latestThreadFileChangeStateByThreadId.set(normalizedThreadId, 'applied')
+      return { threadId: normalizedThreadId, turnId, state: 'applied' }
+    } catch (error) {
+      throw new ThreadFileChangeActionError(
+        'patch_conflict',
+        getErrorMessage(error, 'Failed to apply thread file change patch'),
+        409,
+      )
     }
   }
 
@@ -2029,6 +2196,63 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
 
         setJson(res, 200, { data: await appServer.readThreadFileChangesFallback(threadId) })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-file-changes/latest-reversible') {
+        const threadId = readText(url.searchParams.get('threadId'))
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing query parameter: threadId' })
+          return
+        }
+        const latest = await appServer.readLatestReversibleThreadFileChange(threadId)
+        if (!latest) {
+          setThreadFileChangeActionError(res, new ThreadFileChangeActionError(
+            'no_reversible_turn',
+            `No reversible file change found for thread ${threadId}`,
+            404,
+          ))
+          return
+        }
+        setJson(res, 200, { data: latest })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-file-changes/undo-latest') {
+        const payload = asRecord(await readJsonBody(req))
+        const threadId = readText(payload?.threadId)
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing body field: threadId' })
+          return
+        }
+        try {
+          setJson(res, 200, { data: await appServer.applyLatestReversibleThreadFileChange(threadId, 'undo') })
+        } catch (error) {
+          if (isThreadFileChangeActionError(error)) {
+            setThreadFileChangeActionError(res, error)
+            return
+          }
+          throw error
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-file-changes/reapply-latest') {
+        const payload = asRecord(await readJsonBody(req))
+        const threadId = readText(payload?.threadId)
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing body field: threadId' })
+          return
+        }
+        try {
+          setJson(res, 200, { data: await appServer.applyLatestReversibleThreadFileChange(threadId, 'reapply') })
+        } catch (error) {
+          if (isThreadFileChangeActionError(error)) {
+            setThreadFileChangeActionError(res, error)
+            return
+          }
+          throw error
+        }
         return
       }
 

@@ -279,6 +279,156 @@ test('git push is blocked when the workspace is dirty', async () => {
   await rm(rootDir, { recursive: true, force: true })
 })
 
+test('thread latest reversible returns no_reversible_turn when the thread has no file change history', async () => {
+  await withFreshBridge(async ({ middleware }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer)
+    appServer.rpc = async (_method, params) => {
+      assert.equal(_method, 'thread/read')
+      assert.equal(params?.threadId, 'thread-empty-1')
+      return {
+        thread: {
+          id: 'thread-empty-1',
+          cwd: '/tmp/thread-empty-1',
+          path: '',
+          turns: params?.includeTurns
+            ? [{
+              id: 'turn-1',
+              status: 'completed',
+              items: [{
+                id: 'item-1',
+                type: 'assistantMessage',
+                text: 'plain reply',
+              }],
+            }]
+            : [],
+        },
+      }
+    }
+
+    const latestRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/thread-file-changes/latest-reversible?threadId=thread-empty-1',
+    )
+    assert.equal(latestRes.statusCode, 404)
+    const latestBody = parseBody(latestRes)
+    assert.equal(latestBody.error.code, 'no_reversible_turn')
+    assert.match(latestBody.error.message, /no reversible/i)
+  })
+})
+
+test('undo-latest rejects a dirty workspace with workspace_not_clean', async () => {
+  const { rootDir, repoDir } = await createBareRemoteWorkspace()
+
+  await withFreshBridge(async ({ middleware }) => {
+    await writeFile(join(repoDir, 'dirty.txt'), 'dirty change\n')
+
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer)
+    appServer.rpc = async (_method, params) => {
+      assert.equal(_method, 'thread/read')
+      assert.equal(params?.threadId, 'thread-dirty-1')
+      return {
+        thread: {
+          id: 'thread-dirty-1',
+          cwd: repoDir,
+          path: '',
+          turns: params?.includeTurns
+            ? [{
+              id: 'turn-1',
+              status: 'completed',
+              items: [{
+                id: 'item-1',
+                type: 'fileChange',
+                status: 'completed',
+                changes: [{
+                  path: 'dirty.txt',
+                  diff: 'diff --git a/dirty.txt b/dirty.txt\n--- a/dirty.txt\n+++ b/dirty.txt\n@@ -1 +1 @@\n-before\n+after\n',
+                }],
+              }],
+            }]
+            : [],
+        },
+      }
+    }
+
+    const undoRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/thread-file-changes/undo-latest',
+      { threadId: 'thread-dirty-1' },
+    )
+    assert.equal(undoRes.statusCode, 409)
+    const undoBody = parseBody(undoRes)
+    assert.equal(undoBody.error.code, 'workspace_not_clean')
+    assert.match(undoBody.error.message, /workspace/i)
+  })
+
+  await rm(rootDir, { recursive: true, force: true })
+})
+
+test('reapply-latest rejects a conflicting patch with patch_conflict', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'codex-web-local-thread-conflict-'))
+  const repoDir = join(rootDir, 'repo')
+  await runGit(rootDir, ['init', repoDir])
+  await runGit(repoDir, ['config', 'user.name', 'Codex Test'])
+  await runGit(repoDir, ['config', 'user.email', 'codex@example.com'])
+  await writeFile(join(repoDir, 'demo.txt'), 'alpha\nbeta\ngamma\n')
+  await runGit(repoDir, ['add', 'demo.txt'])
+  await runGit(repoDir, ['commit', '-m', 'initial'])
+  await writeFile(join(repoDir, 'demo.txt'), 'alpha\nchanged\ngamma\n')
+  const patch = await runGit(repoDir, ['diff'])
+  await runGit(repoDir, ['checkout', '--', 'demo.txt'])
+  await writeFile(join(repoDir, 'demo.txt'), 'alpha\nother\ngamma\n')
+  await runGit(repoDir, ['add', 'demo.txt'])
+  await runGit(repoDir, ['commit', '-m', 'conflicting follow-up'])
+
+  await withFreshBridge(async ({ middleware }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer)
+    appServer.rpc = async (_method, params) => {
+      assert.equal(_method, 'thread/read')
+      assert.equal(params?.threadId, 'thread-conflict-1')
+      return {
+        thread: {
+          id: 'thread-conflict-1',
+          cwd: repoDir,
+          path: '',
+          turns: params?.includeTurns
+            ? [{
+              id: 'turn-1',
+              status: 'completed',
+              items: [{
+                id: 'item-1',
+                type: 'fileChange',
+                status: 'completed',
+                changes: [{
+                  path: 'demo.txt',
+                  diff: patch,
+                }],
+              }],
+            }]
+            : [],
+        },
+      }
+    }
+
+    const reapplyRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/thread-file-changes/reapply-latest',
+      { threadId: 'thread-conflict-1' },
+    )
+    assert.equal(reapplyRes.statusCode, 409)
+    const reapplyBody = parseBody(reapplyRes)
+    assert.equal(reapplyBody.error.code, 'patch_conflict')
+    assert.match(reapplyBody.error.message, /apply|conflict/i)
+  })
+
+  await rm(rootDir, { recursive: true, force: true })
+})
+
 test('git push status reports a stable response outside a git repository', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'codex-web-local-push-remote-nonrepo-'))
 

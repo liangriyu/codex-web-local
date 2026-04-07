@@ -414,11 +414,13 @@ export function readAgentMessageCompleted(notification: RpcNotification): UiMess
     if (!item || item.type !== 'agentMessage') return null
     const id = readString(item.id)
     const text = readString(item.text)
+    const turnId = readString(params.turnId)
     if (!id || !text) return null
     return {
       id,
       role: 'assistant',
       text,
+      turnId,
       messageType: 'agentMessage.live',
     }
   }
