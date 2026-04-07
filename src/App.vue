@@ -107,8 +107,8 @@
               @click="onOpenWorkspaceDiff"
             >
               <span class="content-header-diff-icon">+</span>
-              <span class="content-header-diff-add">+{{ workspaceDiffTotals.additions }}</span>
-              <span class="content-header-diff-del">-{{ workspaceDiffTotals.deletions }}</span>
+              <span class="content-header-diff-add">+{{ headerDiffTotals.additions }}</span>
+              <span class="content-header-diff-del">-{{ headerDiffTotals.deletions }}</span>
             </button>
           </template>
         </ContentHeader>
@@ -394,6 +394,15 @@ const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
 const previewPanel = ref<PreviewPanelState | null>(null)
 const isCreatingThreadFromHome = ref(false)
 const workspaceDiffTotals = computed(() => selectedWorkspaceDiffTotals.value)
+const headerDiffTotals = computed(() => {
+  if (previewPanel.value?.kind === 'diff') {
+    return {
+      additions: previewPanel.value.totalAdditions,
+      deletions: previewPanel.value.totalDeletions,
+    }
+  }
+  return workspaceDiffTotals.value
+})
 
 const routeThreadId = computed(() => {
   const rawThreadId = route.params.threadId
@@ -797,6 +806,8 @@ async function onOpenFileReference(payload: { path: string; line: number | null 
       diff: matchedDiff.diff,
       additions: matchedDiff.additions,
       deletions: matchedDiff.deletions,
+      totalAdditions: matchedDiff.additions,
+      totalDeletions: matchedDiff.deletions,
     })
     return
   }
@@ -813,13 +824,22 @@ function onCloseFilePreview(): void {
   previewPanel.value = null
 }
 
-function onOpenFileDiff(payload: { path: string; diff: string; additions: number; deletions: number }): void {
+function onOpenFileDiff(payload: {
+  path: string
+  diff: string
+  additions: number
+  deletions: number
+  totalAdditions: number
+  totalDeletions: number
+}): void {
   previewPanel.value = {
     kind: 'diff',
     path: payload.path,
     diff: payload.diff || '',
     additions: payload.additions,
     deletions: payload.deletions,
+    totalAdditions: payload.totalAdditions,
+    totalDeletions: payload.totalDeletions,
   }
 }
 

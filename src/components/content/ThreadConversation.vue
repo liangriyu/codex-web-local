@@ -235,7 +235,7 @@
                         type="button"
                         class="file-change-view-button"
                         :disabled="!change.diff.trim().length"
-                        @click="onOpenFileDiff(change.path, change.diff, change.additions, change.deletions)"
+                        @click="onOpenFileDiff(change.path, change.diff, change.additions, change.deletions, readMessageFileChanges(message)?.totalAdditions ?? change.additions, readMessageFileChanges(message)?.totalDeletions ?? change.deletions)"
                       >
                         {{ t('threadConversation.viewFileChangeDiff') }}
                       </button>
@@ -331,7 +331,7 @@ const emit = defineEmits<{
   updateScrollState: [payload: { threadId: string; state: ThreadScrollState }]
   respondServerRequest: [payload: { id: number; result?: unknown; error?: { code?: number; message: string } }]
   openFileReference: [payload: { path: string; line: number | null }]
-  openFileDiff: [payload: { path: string; diff: string; additions: number; deletions: number }]
+  openFileDiff: [payload: { path: string; diff: string; additions: number; deletions: number; totalAdditions: number; totalDeletions: number }]
   openWorkspaceDiff: []
   'undo-thread-file-change': [turnId: string]
   'reapply-thread-file-change': [turnId: string]
@@ -801,12 +801,21 @@ function onMarkdownLinkClick(segment: Extract<InlineSegment, { kind: 'markdownLi
   }
 }
 
-function onOpenFileDiff(path: string, diff: string, additions: number, deletions: number): void {
+function onOpenFileDiff(
+  path: string,
+  diff: string,
+  additions: number,
+  deletions: number,
+  totalAdditions: number,
+  totalDeletions: number,
+): void {
   emit('openFileDiff', {
     path,
     diff,
     additions,
     deletions,
+    totalAdditions,
+    totalDeletions,
   })
 }
 

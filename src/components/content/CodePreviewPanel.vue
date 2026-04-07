@@ -194,7 +194,7 @@ import hljs from 'highlight.js/lib/common'
 // ─── 类型 ────────────────────────────────────────────────────
 export type PreviewPanelState =
   | { kind: 'file'; payload: FilePreviewPayload }
-  | { kind: 'diff'; path: string; diff: string; additions: number; deletions: number }
+  | { kind: 'diff'; path: string; diff: string; additions: number; deletions: number; totalAdditions: number; totalDeletions: number }
   | { kind: 'workspace'; cwd: string }
 
 type RenderableDiffLine = {
@@ -328,6 +328,23 @@ function highlightSingleLine(text: string, language: string | null): string {
 }
 
 // ─── Diff 解析 ───────────────────────────────────────────────
+function parseDiffHunkHeader(rawLine: string): { oldLine: number | null; newLine: number | null } | null {
+  const match = rawLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u)
+  if (match) {
+    return {
+      oldLine: Number.parseInt(match[1], 10),
+      newLine: Number.parseInt(match[2], 10),
+    }
+  }
+  if (rawLine.trim() === '@@') {
+    return {
+      oldLine: null,
+      newLine: null,
+    }
+  }
+  return null
+}
+
 function buildFileDiffAnnotations(diff: string): {
   addedNewLines: Set<number>
   deletionsByNewPos: Map<number, Array<{ oldLine: number; text: string }>>
@@ -336,8 +353,8 @@ function buildFileDiffAnnotations(diff: string): {
   const deletionsByNewPos = new Map<number, Array<{ oldLine: number; text: string }>>()
   const lines = diff.split('\n')
 
-  let oldLine = 0
-  let newLine = 0
+  let oldLine: number | null = null
+  let newLine: number | null = null
   let inHunk = false
 
   for (const rawLine of lines) {
@@ -351,10 +368,10 @@ function buildFileDiffAnnotations(diff: string): {
     }
 
     if (rawLine.startsWith('@@')) {
-      const match = rawLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u)
-      if (match) {
-        oldLine = Number.parseInt(match[1], 10)
-        newLine = Number.parseInt(match[2], 10)
+      const header = parseDiffHunkHeader(rawLine)
+      if (header) {
+        oldLine = header.oldLine
+        newLine = header.newLine
         inHunk = true
       }
       continue
@@ -367,21 +384,31 @@ function buildFileDiffAnnotations(diff: string): {
     const content = rawLine.length > 0 ? rawLine.slice(1) : ''
 
     if (marker === '+') {
-      addedNewLines.add(newLine)
-      newLine += 1
+      if (newLine !== null) {
+        addedNewLines.add(newLine)
+        newLine += 1
+      }
       continue
     }
 
     if (marker === '-') {
-      const existing = deletionsByNewPos.get(newLine) ?? []
-      existing.push({ oldLine, text: content })
-      deletionsByNewPos.set(newLine, existing)
-      oldLine += 1
+      if (newLine !== null && oldLine !== null) {
+        const existing = deletionsByNewPos.get(newLine) ?? []
+        existing.push({ oldLine, text: content })
+        deletionsByNewPos.set(newLine, existing)
+      }
+      if (oldLine !== null) {
+        oldLine += 1
+      }
       continue
     }
 
-    oldLine += 1
-    newLine += 1
+    if (oldLine !== null) {
+      oldLine += 1
+    }
+    if (newLine !== null) {
+      newLine += 1
+    }
   }
 
   return { addedNewLines, deletionsByNewPos }
@@ -391,8 +418,8 @@ function buildRenderableDiffLines(diff: string): RenderableDiffLine[] {
   const lines = diff.split('\n')
   const rendered: RenderableDiffLine[] = []
 
-  let oldLine = 0
-  let newLine = 0
+  let oldLine: number | null = null
+  let newLine: number | null = null
   let inHunk = false
 
   for (const rawLine of lines) {
@@ -406,10 +433,10 @@ function buildRenderableDiffLines(diff: string): RenderableDiffLine[] {
     }
 
     if (rawLine.startsWith('@@')) {
-      const match = rawLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u)
-      if (match) {
-        oldLine = Number.parseInt(match[1], 10)
-        newLine = Number.parseInt(match[2], 10)
+      const header = parseDiffHunkHeader(rawLine)
+      if (header) {
+        oldLine = header.oldLine
+        newLine = header.newLine
         inHunk = true
       }
       continue
@@ -428,7 +455,9 @@ function buildRenderableDiffLines(diff: string): RenderableDiffLine[] {
         newLine,
         text: content,
       })
-      newLine += 1
+      if (newLine !== null) {
+        newLine += 1
+      }
       continue
     }
 
@@ -439,7 +468,9 @@ function buildRenderableDiffLines(diff: string): RenderableDiffLine[] {
         newLine: null,
         text: content,
       })
-      oldLine += 1
+      if (oldLine !== null) {
+        oldLine += 1
+      }
       continue
     }
 
@@ -449,8 +480,12 @@ function buildRenderableDiffLines(diff: string): RenderableDiffLine[] {
       newLine,
       text: marker === ' ' ? content : rawLine,
     })
-    oldLine += 1
-    newLine += 1
+    if (oldLine !== null) {
+      oldLine += 1
+    }
+    if (newLine !== null) {
+      newLine += 1
+    }
   }
 
   return rendered
