@@ -386,6 +386,23 @@
         </div>
 
         <button
+          v-if="shouldShowVoiceButton"
+          class="thread-composer-voice-button"
+          type="button"
+          :aria-label="voiceButtonLabel"
+          :title="voiceButtonLabel"
+          :disabled="isVoiceButtonDisabled"
+          :data-state="voiceInputState"
+          @click="onVoiceInputButtonClick"
+        >
+          <svg class="thread-composer-voice-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 4a3 3 0 0 0-3 3v4a3 3 0 1 0 6 0V7a3 3 0 0 0-3-3Zm-5 7a1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11a1 1 0 1 0-2 0 5 5 0 1 1-10 0Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+        <button
           v-if="shouldShowStopButton"
           class="thread-composer-stop"
           type="button"
@@ -436,7 +453,9 @@ import IconTablerPaperclip from '../icons/IconTablerPaperclip.vue'
 import IconTablerTerminal2 from '../icons/IconTablerTerminal2.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
 import { getModelReasoningSupport } from '../../api/codexGateway'
+import { requestLocalTranscription } from '../../api/transcriptionGateway'
 import ComposerDropdown from './ComposerDropdown.vue'
+import { detectVoiceInputSupport } from '../../utils/voiceInput'
 
 const props = defineProps<{
   activeThreadId: string
@@ -465,6 +484,34 @@ type ComposerImageInput = {
   url: string
 }
 
+type VoiceInputState = 'idle' | 'listening-native' | 'recording-fallback' | 'transcribing-fallback' | 'failed'
+type VoiceInputErrorKey =
+  | 'composer.voiceUnsupported'
+  | 'composer.voicePermissionDenied'
+  | 'composer.voiceTranscriptionFailed'
+
+type SpeechRecognitionResultLike = {
+  isFinal: boolean
+  0?: { transcript?: string }
+}
+
+type SpeechRecognitionEventLike = Event & {
+  results: ArrayLike<SpeechRecognitionResultLike>
+}
+
+type SpeechRecognitionInstance = EventTarget & {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  start(): void
+  stop(): void
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null
+  onerror: ((event: Event & { error?: string }) => void) | null
+  onend: (() => void) | null
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance
+
 const emit = defineEmits<{
   submit: [payload: ComposerSubmitPayload]
   interrupt: []
@@ -489,6 +536,15 @@ const isActionsMenuOpen = ref(false)
 const isBranchMenuOpen = ref(false)
 const newBranchName = ref('')
 const pastedImages = ref<ComposerImageInput[]>([])
+const voiceInputSupport = detectVoiceInputSupport()
+const voiceInputState = ref<VoiceInputState>('idle')
+const voiceInputErrorKey = ref<VoiceInputErrorKey | null>(null)
+const activeSpeechRecognition = ref<SpeechRecognitionInstance | null>(null)
+const activeMediaRecorder = ref<MediaRecorder | null>(null)
+const activeMediaStream = ref<MediaStream | null>(null)
+const fallbackAudioChunks = ref<BlobPart[]>([])
+const fallbackAutoStopTimer = ref<number | null>(null)
+const shouldDiscardFallbackRecording = ref(false)
 const normalizedLanguage = computed<UiLanguage>(() => props.uiLanguage ?? 'zh')
 const REASONING_EFFORT_ORDER: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const reasoningOptions = computed<Array<{ value: ReasoningEffort; label: string; icon?: Component; iconProps?: Record<string, unknown> }>>(() => {
@@ -922,9 +978,33 @@ const canSubmit = computed(() => {
   if (!props.activeThreadId) return false
   return draft.value.trim().length > 0 || pastedImages.value.length > 0
 })
+const shouldShowVoiceButton = computed(() =>
+  props.activeThreadId
+  && voiceInputSupport.preferredMode !== 'unsupported',
+)
+const isVoiceButtonDisabled = computed(() =>
+  props.disabled === true
+  || !props.activeThreadId
+  || voiceInputState.value === 'transcribing-fallback',
+)
 const shouldShowStopButton = computed(() =>
   props.isTurnInProgress === true && draft.value.trim().length === 0,
 )
+const voiceButtonLabel = computed(() => {
+  if (voiceInputState.value === 'listening-native') {
+    return tUi(normalizedLanguage.value, 'composer.voiceListening')
+  }
+  if (voiceInputState.value === 'recording-fallback') {
+    return tUi(normalizedLanguage.value, 'composer.voiceRecording')
+  }
+  if (voiceInputState.value === 'transcribing-fallback') {
+    return tUi(normalizedLanguage.value, 'composer.voiceTranscribing')
+  }
+  if (voiceInputState.value === 'failed' && voiceInputErrorKey.value) {
+    return tUi(normalizedLanguage.value, voiceInputErrorKey.value)
+  }
+  return tUi(normalizedLanguage.value, 'composer.voiceInput')
+})
 
 const placeholderText = computed(() =>
   props.activeThreadId
@@ -949,6 +1029,191 @@ function onCompositionStart(): void {
 
 function onCompositionEnd(): void {
   isComposing.value = false
+}
+
+function mergeDraftWithTranscript(currentDraft: string, transcript: string): string {
+  const normalizedTranscript = transcript.trim()
+  if (!normalizedTranscript) return currentDraft
+  const base = currentDraft.trimEnd()
+  if (!base) return normalizedTranscript
+  return `${base} ${normalizedTranscript}`
+}
+
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null
+  const candidate = window as Window & typeof globalThis & {
+    SpeechRecognition?: SpeechRecognitionConstructor
+    webkitSpeechRecognition?: SpeechRecognitionConstructor
+  }
+  return candidate.SpeechRecognition ?? candidate.webkitSpeechRecognition ?? null
+}
+
+function applyTranscriptToDraft(transcript: string): void {
+  draft.value = mergeDraftWithTranscript(draft.value, transcript)
+}
+
+function resetVoiceInputState(): void {
+  voiceInputState.value = 'idle'
+  voiceInputErrorKey.value = null
+}
+
+function clearFallbackRecordingState(): void {
+  if (fallbackAutoStopTimer.value !== null) {
+    window.clearTimeout(fallbackAutoStopTimer.value)
+    fallbackAutoStopTimer.value = null
+  }
+  activeMediaRecorder.value = null
+  if (activeMediaStream.value) {
+    activeMediaStream.value.getTracks().forEach((track) => track.stop())
+  activeMediaStream.value = null
+  }
+  fallbackAudioChunks.value = []
+  shouldDiscardFallbackRecording.value = false
+}
+
+function failVoiceInput(errorKey: VoiceInputErrorKey): void {
+  clearFallbackRecordingState()
+  voiceInputState.value = 'failed'
+  voiceInputErrorKey.value = errorKey
+}
+
+function startNativeSpeechRecognition(): void {
+  const Recognition = getSpeechRecognitionConstructor()
+  if (!Recognition) {
+    void startFallbackRecording()
+    return
+  }
+
+  const recognition = new Recognition()
+  activeSpeechRecognition.value = recognition
+  voiceInputState.value = 'listening-native'
+  voiceInputErrorKey.value = null
+  recognition.lang = normalizedLanguage.value === 'zh' ? 'zh-CN' : 'en-US'
+  recognition.continuous = false
+  recognition.interimResults = false
+  recognition.onresult = (event) => {
+    const transcript = Array.from(event.results)
+      .filter((result) => result.isFinal)
+      .map((result) => result[0]?.transcript?.trim() ?? '')
+      .filter((value) => value.length > 0)
+      .join(' ')
+    if (transcript) {
+      applyTranscriptToDraft(transcript)
+    }
+  }
+  recognition.onerror = () => {
+    activeSpeechRecognition.value = null
+    failVoiceInput('composer.voiceTranscriptionFailed')
+  }
+  recognition.onend = () => {
+    activeSpeechRecognition.value = null
+    if (voiceInputState.value === 'listening-native') {
+      resetVoiceInputState()
+    }
+  }
+  recognition.start()
+}
+
+async function transcribeFallbackAudio(audio: Blob): Promise<void> {
+  voiceInputState.value = 'transcribing-fallback'
+  try {
+    const response = await requestLocalTranscription(audio)
+    applyTranscriptToDraft(response.text ?? '')
+    resetVoiceInputState()
+  } catch {
+    failVoiceInput('composer.voiceTranscriptionFailed')
+  }
+}
+
+async function startFallbackRecording(): Promise<void> {
+  if (!voiceInputSupport.hasFallbackRecording || voiceInputSupport.requiresSecureContext) {
+    failVoiceInput('composer.voiceUnsupported')
+    return
+  }
+
+  voiceInputState.value = 'recording-fallback'
+  voiceInputErrorKey.value = null
+  shouldDiscardFallbackRecording.value = false
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    activeMediaStream.value = stream
+    const mimeType = typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : ''
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+    activeMediaRecorder.value = recorder
+    fallbackAudioChunks.value = []
+
+    recorder.addEventListener('dataavailable', (event) => {
+      if (event.data.size > 0) {
+        fallbackAudioChunks.value = [...fallbackAudioChunks.value, event.data]
+      }
+    })
+
+    recorder.addEventListener('stop', () => {
+      const chunks = [...fallbackAudioChunks.value]
+      const shouldDiscard = shouldDiscardFallbackRecording.value
+      clearFallbackRecordingState()
+      if (shouldDiscard) {
+        resetVoiceInputState()
+        return
+      }
+      if (chunks.length === 0) {
+        failVoiceInput('composer.voiceTranscriptionFailed')
+        return
+      }
+      void transcribeFallbackAudio(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }))
+    }, { once: true })
+
+    recorder.start()
+    fallbackAutoStopTimer.value = window.setTimeout(() => {
+      if (recorder.state !== 'inactive') {
+        recorder.stop()
+      }
+    }, 30000)
+  } catch (error) {
+    const isPermissionError = error instanceof DOMException
+      && (error.name === 'NotAllowedError' || error.name === 'SecurityError')
+    failVoiceInput(isPermissionError ? 'composer.voicePermissionDenied' : 'composer.voiceTranscriptionFailed')
+  }
+}
+
+function stopFallbackRecording(): void {
+  const recorder = activeMediaRecorder.value
+  if (!recorder || recorder.state === 'inactive') return
+  recorder.stop()
+}
+
+function discardFallbackRecording(): void {
+  const recorder = activeMediaRecorder.value
+  if (!recorder || recorder.state === 'inactive') {
+    clearFallbackRecordingState()
+    return
+  }
+  shouldDiscardFallbackRecording.value = true
+  recorder.stop()
+}
+
+function onVoiceInputButtonClick(): void {
+  if (isVoiceButtonDisabled.value) return
+
+  if (voiceInputState.value === 'listening-native') {
+    activeSpeechRecognition.value?.stop()
+    return
+  }
+
+  if (voiceInputState.value === 'recording-fallback') {
+    stopFallbackRecording()
+    return
+  }
+
+  if (voiceInputSupport.preferredMode === 'native') {
+    startNativeSpeechRecognition()
+    return
+  }
+
+  void startFallbackRecording()
 }
 
 function onEnterKeydown(event: KeyboardEvent): void {
@@ -1061,6 +1326,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', onDocumentPointerDown)
+  activeSpeechRecognition.value?.stop()
+  discardFallbackRecording()
 })
 
 function onInterrupt(): void {
@@ -1118,6 +1385,9 @@ watch(
   () => {
     draft.value = ''
     pastedImages.value = []
+    activeSpeechRecognition.value?.stop()
+    discardFallbackRecording()
+    resetVoiceInputState()
     closeActionsMenu()
     closeBranchMenu()
     newBranchName.value = ''
@@ -1182,6 +1452,24 @@ watch(
 
 .thread-composer-actions-trigger {
   @apply inline-flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-zinc-50 text-zinc-700 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400;
+}
+
+.thread-composer-voice-button {
+  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-50 text-zinc-700 transition disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400;
+}
+
+.thread-composer-voice-button:hover {
+  @apply bg-zinc-100;
+}
+
+.thread-composer-voice-button[data-state='listening-native'],
+.thread-composer-voice-button[data-state='recording-fallback'],
+.thread-composer-voice-button[data-state='transcribing-fallback'] {
+  @apply border-rose-200 bg-rose-50 text-rose-700;
+}
+
+.thread-composer-voice-icon {
+  @apply h-4 w-4;
 }
 
 .thread-composer-actions-trigger-mark {

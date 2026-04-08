@@ -584,6 +584,34 @@ const UI_TEXT = {
     zh: '输入消息...',
     en: 'Type a message...',
   },
+  'composer.voiceInput': {
+    zh: '语音输入',
+    en: 'Voice input',
+  },
+  'composer.voiceListening': {
+    zh: '正在聆听语音',
+    en: 'Listening for speech',
+  },
+  'composer.voiceRecording': {
+    zh: '正在录音',
+    en: 'Recording audio',
+  },
+  'composer.voiceTranscribing': {
+    zh: '正在转写语音',
+    en: 'Transcribing audio',
+  },
+  'composer.voiceUnsupported': {
+    zh: '当前环境暂不支持语音输入',
+    en: 'Voice input is unavailable in this environment',
+  },
+  'composer.voicePermissionDenied': {
+    zh: '麦克风权限被拒绝',
+    en: 'Microphone permission was denied',
+  },
+  'composer.voiceTranscriptionFailed': {
+    zh: '语音转写失败，请重试',
+    en: 'Voice transcription failed. Try again.',
+  },
   'composer.selectThreadFirst': {
     zh: '请选择一个会话后再发送消息',
     en: 'Select a thread to send a message',
