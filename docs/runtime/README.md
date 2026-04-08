@@ -25,3 +25,26 @@
   - 根目录 `README.zh-CN.md`
   - 本目录文档
 - 交付前至少完成一次构建验证：`npm run build`
+
+## 语音输入运行说明
+
+- `Chrome / Edge 桌面` 与 `Android Chrome` 默认优先使用浏览器原生语音识别。
+- `iPhone Chrome` 默认依赖录音回退路径，因此需要：
+  - 使用 `HTTPS` 访问当前服务
+  - 配置本机离线 STT，可通过 `--stt-command` 与 `--stt-model` 启用
+- 若只配置了浏览器原生识别能力而未配置本机 STT，则 iPhone Chrome 无法获得稳定语音输入体验。
+
+## 语音输入相关 CLI 参数
+
+- `--https-cert <path>`
+- `--https-key <path>`
+- `--stt-command <path>`
+- `--stt-model <path>`
+- `--stt-language <code>`
+- `--stt-timeout-ms <ms>`
+
+## 局域网与 iPhone 使用建议
+
+- 需要在局域网内让 iPhone 浏览器使用语音输入时，优先通过 `https://<局域网地址>:<端口>` 访问。
+- 如果证书是自签发或本地 CA 颁发，需要在 iPhone 上安装并信任对应证书。
+- `http://局域网IP` 仍可访问普通 Web UI，但不能作为 iPhone 录音回退的可靠方案。

@@ -31,6 +31,12 @@ Options:
   -d, --daemon         run in background (daemon mode)
   --password <pass>    set a specific password
   --no-password        disable password protection
+  --https-cert <path>  path to the HTTPS certificate (PEM)
+  --https-key <path>   path to the HTTPS private key (PEM)
+  --stt-command <path> path to the local speech-to-text executable
+  --stt-model <path>   path to the local speech-to-text model
+  --stt-language <code> default speech-to-text language code
+  --stt-timeout-ms <ms> local speech-to-text timeout in milliseconds
   -h, --help           display help for command
 ```
 
@@ -59,6 +65,15 @@ codex-web-local --host 0.0.0.0
 
 # Tailscale setup in daemon mode (background)
 codex-web-local --host "$(tailscale ip -4)" --port 3000 --daemon
+
+# Enable HTTPS and local offline speech-to-text
+codex-web-local \
+  --host 0.0.0.0 \
+  --port 3443 \
+  --https-cert ./certs/dev.pem \
+  --https-key ./certs/dev-key.pem \
+  --stt-command /usr/local/bin/whisper-cli \
+  --stt-model ./models/ggml-base.bin
 ```
 
 ### Dev Commands (Vite)
@@ -82,9 +97,20 @@ When started with password protection (default), the server prints the password 
   - current git branch
   - context window usage ring with detailed hover info
   - remaining quota hover card
+- Composer now supports voice input:
+  - Chrome / Edge desktop and Android Chrome prefer native speech recognition
+  - iPhone Chrome falls back to browser recording + local offline STT when HTTPS and local STT are configured
+  - transcripts are inserted back into the input box and are not auto-sent
 - Context hover card supports manual compaction via "Compact Now" (calls `thread/compact/start`).
 - Thread list uses `name` as the primary title. `preview` is shown in tooltip, not inline on hover.
 - You can continue typing while the model is still responding. New sends are queued and auto-sent after the current turn finishes.
+
+## Voice Input Notes
+
+- Voice input never changes the thread message protocol. It only writes transcripts back into the composer text area.
+- iPhone Chrome requires `HTTPS` for the recording fallback path. Plain `http://LAN-IP` is not enough for microphone access.
+- Local offline STT is optional for desktop Chrome / Edge and Android Chrome, but required for iPhone fallback if native recognition is unavailable.
+- The current implementation is designed for local `whisper.cpp`-style executables configured through `--stt-command` and `--stt-model`.
 
 ## Daemon Notes
 
