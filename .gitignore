@@ -1,5 +1,6 @@
 node_modules/
 .worktrees/
+tmp/
 dist/
 dist-cli/
 *.tsbuildinfo

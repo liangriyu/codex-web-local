@@ -37,7 +37,9 @@
       </ul>
 
       <div class="thread-composer-controls">
-        <div ref="actionsMenuRef" class="thread-composer-actions">
+        <div class="thread-composer-main-controls">
+          <div class="thread-composer-config-group">
+            <div ref="actionsMenuRef" class="thread-composer-actions">
           <input
             ref="fileInputRef"
             class="thread-composer-file-input"
@@ -104,33 +106,74 @@
                 </div>
               </div>
             </div>
+            </div>
           </div>
+
+          <ComposerDropdown
+              class="thread-composer-control"
+              :model-value="selectedModel"
+              :options="modelOptions"
+              :placeholder="tUi(normalizedLanguage, 'composer.model')"
+              menu-width="model"
+              :show-option-icons="false"
+              open-direction="up"
+              :disabled="disabled || !activeThreadId || modelOptions.length === 0"
+              @update:model-value="onModelSelect"
+          />
+
+          <ComposerDropdown
+            v-if="reasoningOptions.length > 0"
+            class="thread-composer-control"
+            :model-value="selectedReasoningEffort"
+            :options="reasoningOptions"
+            :placeholder="tUi(normalizedLanguage, 'composer.thinking')"
+            :menu-title="reasoningLabel"
+            :trigger-title="reasoningLabel"
+            open-direction="up"
+            :disabled="disabled || !activeThreadId || isTurnInProgress"
+            @update:model-value="onReasoningEffortSelect"
+          />
         </div>
 
-        <ComposerDropdown
-          class="thread-composer-control"
-          :model-value="selectedModel"
-          :options="modelOptions"
-          :placeholder="tUi(normalizedLanguage, 'composer.model')"
-          menu-width="model"
-          :show-option-icons="false"
-          open-direction="up"
-          :disabled="disabled || !activeThreadId || models.length === 0"
-          @update:model-value="onModelSelect"
-        />
-
-        <ComposerDropdown
-          v-if="reasoningOptions.length > 0"
-          class="thread-composer-control"
-          :model-value="selectedReasoningEffort"
-          :options="reasoningOptions"
-          :placeholder="tUi(normalizedLanguage, 'composer.thinking')"
-          :menu-title="reasoningLabel"
-          :trigger-title="reasoningLabel"
-          open-direction="up"
-          :disabled="disabled || !activeThreadId || isTurnInProgress"
-          @update:model-value="onReasoningEffortSelect"
-        />
+          <div class="thread-composer-action-group">
+            <button
+              v-if="shouldShowVoiceButton"
+              class="thread-composer-voice-button"
+              type="button"
+              :aria-label="voiceButtonLabel"
+              :title="voiceButtonLabel"
+              :disabled="isVoiceButtonDisabled"
+              :data-state="voiceInputState"
+              @click="onVoiceInputButtonClick"
+            >
+              <svg class="thread-composer-voice-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 4a3 3 0 0 0-3 3v4a3 3 0 1 0 6 0V7a3 3 0 0 0-3-3Zm-5 7a1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11a1 1 0 1 0-2 0 5 5 0 1 1-10 0Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
+            <button
+              v-if="shouldShowStopButton"
+              class="thread-composer-stop"
+              type="button"
+              aria-label="Стоп"
+              :disabled="disabled || !activeThreadId || isInterruptingTurn"
+              @click="onInterrupt"
+            >
+              <IconTablerPlayerStopFilled class="thread-composer-stop-icon" />
+            </button>
+            <button
+              v-else
+              class="thread-composer-submit"
+              type="submit"
+              aria-label="Send message"
+              :disabled="!canSubmit"
+            >
+              <IconTablerArrowUp class="thread-composer-submit-icon" />
+            </button>
+          </div>
+        </div>
 
         <div v-if="activeThreadId" class="thread-composer-status-group">
           <div
@@ -321,13 +364,39 @@
           </div>
 
           <div class="thread-composer-quota-wrap">
+            <div
+              v-if="quotaDisplayRows.length > 0"
+              class="thread-composer-quota-display"
+              tabindex="0"
+              :aria-label="rateLimitSummaryLabel"
+              :title="rateLimitSummaryLabel"
+            >
+              <template v-for="row in quotaDisplayRows" :key="row.key">
+                <span
+                  v-if="row.kind === 'pill'"
+                  class="thread-composer-quota-pill"
+                  :data-level="row.level"
+                >
+                  {{ row.displayLabel }}
+                </span>
+                <button
+                  v-else-if="row.kind === 'ring'"
+                  class="thread-composer-quota-ring"
+                  type="button"
+                  :data-level="row.level"
+                  :style="row.ringStyle"
+                >
+                  <span class="thread-composer-quota-ring-inner">{{ row.windowLabel }}</span>
+                </button>
+              </template>
+            </div>
             <span
-              v-if="rateLimitLabel"
+              v-else-if="rateLimitSummaryLabel"
               class="thread-composer-status-chip thread-composer-status-chip-action"
               :data-quota-level="quotaLevel"
               tabindex="0"
             >
-              {{ rateLimitLabel }}
+              {{ rateLimitSummaryLabel }}
             </span>
             <div class="thread-composer-status-popover" role="status" aria-live="polite">
               <div class="thread-composer-popover-header">
@@ -385,42 +454,6 @@
           </div>
         </div>
 
-        <button
-          v-if="shouldShowVoiceButton"
-          class="thread-composer-voice-button"
-          type="button"
-          :aria-label="voiceButtonLabel"
-          :title="voiceButtonLabel"
-          :disabled="isVoiceButtonDisabled"
-          :data-state="voiceInputState"
-          @click="onVoiceInputButtonClick"
-        >
-          <svg class="thread-composer-voice-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M12 4a3 3 0 0 0-3 3v4a3 3 0 1 0 6 0V7a3 3 0 0 0-3-3Zm-5 7a1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11a1 1 0 1 0-2 0 5 5 0 1 1-10 0Z"
-              fill="currentColor"
-            />
-          </svg>
-        </button>
-        <button
-          v-if="shouldShowStopButton"
-          class="thread-composer-stop"
-          type="button"
-          aria-label="Стоп"
-          :disabled="disabled || !activeThreadId || isInterruptingTurn"
-          @click="onInterrupt"
-        >
-          <IconTablerPlayerStopFilled class="thread-composer-stop-icon" />
-        </button>
-        <button
-          v-else
-          class="thread-composer-submit"
-          type="submit"
-          aria-label="Send message"
-          :disabled="!canSubmit"
-        >
-          <IconTablerArrowUp class="thread-composer-submit-icon" />
-        </button>
       </div>
     </div>
   </form>
@@ -558,11 +591,14 @@ const reasoningOptions = computed<Array<{ value: ReasoningEffort; label: string;
   ]
 
   const support = getModelReasoningSupport(props.selectedModel)
+  const optionByEffort = new Map(base.map((option) => [option.value, option]))
   if (support.supported.length === 0) {
-    return []
+    const fallbackEffort = props.selectedReasoningEffort
+    return fallbackEffort
+      ? [optionByEffort.get(fallbackEffort)].filter((option): option is { value: ReasoningEffort; label: string; icon?: Component; iconProps?: Record<string, unknown> } => option !== undefined)
+      : []
   }
 
-  const optionByEffort = new Map(base.map((option) => [option.value, option]))
   return REASONING_EFFORT_ORDER
     .filter((effort) => support.supported.includes(effort))
     .map((effort) => optionByEffort.get(effort))
@@ -589,7 +625,7 @@ function toDisplayModelName(modelId: string): string {
 }
 
 const modelOptions = computed(() =>
-  props.models.map((modelId) => ({
+  (props.models.length > 0 ? props.models : props.selectedModel.trim() ? [props.selectedModel.trim()] : []).map((modelId) => ({
     value: modelId,
     label: toDisplayModelName(modelId),
     icon: IconTablerSettings,
@@ -822,7 +858,13 @@ function formatCompactWindowDuration(minutes: number | null): string {
   }
   return tUi(normalizedLanguage.value, 'composer.quotaWindowCompactMinutes', { minutes: rounded })
 }
-const rateLimitLabel = computed(() => {
+function toQuotaLevel(remaining: number): 'normal' | 'warn' | 'danger' {
+  const normalizedRemaining = Math.max(0, remaining)
+  if (normalizedRemaining < 5) return 'danger'
+  if (normalizedRemaining < 20) return 'warn'
+  return 'normal'
+}
+const rateLimitSummaryLabel = computed(() => {
   const usage = props.rateLimitUsage
   if (!usage) return ''
 
@@ -844,6 +886,42 @@ const rateLimitLabel = computed(() => {
   const remaining = Math.max(0, Math.round(usage.remainingPercent))
   return tUi(normalizedLanguage.value, 'composer.quotaRemaining', { percent: remaining })
 })
+const quotaDisplayRows = computed<Array<{
+  key: string
+  kind: 'pill' | 'ring'
+  windowLabel: string
+  displayLabel: string
+  ringStyle?: Record<string, string>
+  level: 'normal' | 'warn' | 'danger'
+}>>(() => {
+  const usage = props.rateLimitUsage
+  if (!usage) return []
+
+  const windows = (usage.windows ?? [])
+    .filter((row) => typeof row.usedPercent === 'number' && Number.isFinite(row.usedPercent))
+    .sort((first, second) => {
+      const firstDuration = first.windowDurationMins ?? Number.MAX_SAFE_INTEGER
+      const secondDuration = second.windowDurationMins ?? Number.MAX_SAFE_INTEGER
+      return secondDuration - firstDuration
+    })
+
+  return windows.slice(0, 2).map((row, index) => {
+    const remaining = Math.max(0, Math.round(100 - row.usedPercent))
+    const windowLabel = formatCompactWindowDuration(row.windowDurationMins) || tUi(normalizedLanguage.value, 'composer.quotaWindowUnknown')
+    return {
+      key: `${String(row.windowDurationMins ?? 'unknown')}-${String(row.resetsAt ?? 'na')}`,
+      kind: index === 0 ? 'pill' : 'ring',
+      windowLabel,
+      displayLabel: `${windowLabel} ${remaining}%`,
+      ringStyle: index === 0
+        ? undefined
+        : {
+            '--quota-ring-fill': `${remaining}%`,
+          },
+      level: toQuotaLevel(remaining),
+    }
+  })
+})
 const quotaLevel = computed<'normal' | 'warn' | 'danger'>(() => {
   const usage = props.rateLimitUsage
   if (!usage) return 'normal'
@@ -854,10 +932,7 @@ const quotaLevel = computed<'normal' | 'warn' | 'danger'>(() => {
     minRemaining = Math.min(minRemaining, windowMin)
   }
   
-  const remaining = Math.max(0, minRemaining)
-  if (remaining < 5) return 'danger'
-  if (remaining < 20) return 'warn'
-  return 'normal'
+  return toQuotaLevel(minRemaining)
 })
 function formatWindowDuration(minutes: number | null): string {
   if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) {
@@ -1438,6 +1513,18 @@ watch(
   @apply mt-3 flex items-center gap-4;
 }
 
+.thread-composer-main-controls {
+  @apply flex min-w-0 flex-1 items-center gap-4;
+}
+
+.thread-composer-config-group {
+  @apply flex min-w-0 items-center gap-4;
+}
+
+.thread-composer-action-group {
+  @apply ml-auto flex items-center gap-2;
+}
+
 .thread-composer-control {
   @apply shrink-0;
 }
@@ -1469,11 +1556,11 @@ watch(
 }
 
 .thread-composer-voice-icon {
-  @apply h-4 w-4;
+  @apply h-3 w-3;
 }
 
 .thread-composer-actions-trigger-mark {
-  @apply text-base leading-none;
+  @apply text-xs leading-none;
 }
 
 .thread-composer-actions-menu {
@@ -1771,7 +1858,7 @@ watch(
 }
 
 .thread-composer-branch-icon {
-  @apply h-3.5 w-3.5 shrink-0;
+  @apply h-3 w-3 shrink-0;
 }
 
 .thread-composer-branch-text {
@@ -1787,6 +1874,53 @@ watch(
 .thread-composer-quota-wrap,
 .thread-composer-context-wrap {
   @apply relative flex items-center;
+}
+
+.thread-composer-quota-display {
+  @apply inline-flex items-center gap-1.5;
+}
+
+.thread-composer-quota-pill {
+  @apply inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap;
+}
+
+.thread-composer-quota-pill[data-level='normal'] {
+  @apply border-emerald-200 bg-emerald-50 text-emerald-700;
+}
+
+.thread-composer-quota-pill[data-level='warn'] {
+  @apply border-amber-200 bg-amber-50 text-amber-700;
+}
+
+.thread-composer-quota-pill[data-level='danger'] {
+  @apply border-rose-200 bg-rose-50 text-rose-700;
+}
+
+.thread-composer-quota-ring {
+  background: conic-gradient(var(--quota-ring-color, #a1a1aa) var(--quota-ring-fill), var(--color-border-default) 0%);
+  @apply relative inline-flex h-6 w-6 items-center justify-center rounded-full border-0 p-0 text-[8px] font-semibold shadow-sm;
+  color: var(--quota-ring-text, var(--color-text-secondary));
+}
+
+.thread-composer-quota-ring-inner {
+  @apply inline-flex h-4 w-4 items-center justify-center rounded-full text-[8px] font-bold;
+  background: var(--color-bg-surface);
+  color: currentColor;
+}
+
+.thread-composer-quota-ring[data-level='normal'] {
+  --quota-ring-color: #16a34a;
+  --quota-ring-text: #166534;
+}
+
+.thread-composer-quota-ring[data-level='warn'] {
+  --quota-ring-color: #ca8a04;
+  --quota-ring-text: #854d0e;
+}
+
+.thread-composer-quota-ring[data-level='danger'] {
+  --quota-ring-color: #dc2626;
+  --quota-ring-text: #991b1b;
 }
 
 .thread-composer-context-ring {
@@ -1974,7 +2108,36 @@ watch(
   }
 
   .thread-composer-controls {
-    @apply gap-2;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .thread-composer-main-controls {
+    width: 100%;
+    gap: 0.5rem;
+  }
+
+  .thread-composer-config-group {
+    @apply min-w-0 flex-1 gap-2;
+  }
+
+  .thread-composer-action-group {
+    @apply ml-auto gap-2;
+    flex: 0 0 auto;
+  }
+
+  .thread-composer-actions-trigger,
+  .thread-composer-voice-button,
+  .thread-composer-submit,
+  .thread-composer-stop {
+    width: 2.5rem;
+    height: 2.5rem;
+    min-width: 2.5rem;
+    max-width: 2.5rem;
+    padding: 0;
+    flex: 0 0 2.5rem;
+    justify-content: center;
   }
 
   .thread-composer-control {
@@ -1987,29 +2150,32 @@ watch(
   }
 
   .thread-composer-status-group {
-    @apply min-w-0 flex-1 justify-end gap-1;
-    width: auto;
+    @apply min-w-0 gap-1;
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .thread-composer-branch-wrap {
     min-width: 0;
-    flex: 0 0 auto;
-    max-width: none;
+    flex: 0 1 auto;
+    max-width: min(12rem, 55vw);
   }
 
-  .thread-composer-branch-chip,
   .thread-composer-branch-button {
-    width: 2.5rem;
-    height: 2.5rem;
-    min-width: 2.5rem;
-    max-width: 2.5rem;
-    padding: 0;
-    justify-content: center;
+    width: auto;
+    min-width: 0;
+    min-height: 2.5rem;
+    max-width: 100%;
+    padding: 0 0.625rem;
+    gap: 0.375rem;
+    flex: 0 1 auto;
+    justify-content: flex-start;
   }
 
-  .thread-composer-branch-text,
-  .thread-composer-branch-chevron {
-    display: none;
+  .thread-composer-branch-text {
+    display: inline;
   }
 
   .thread-composer-quota-wrap,
