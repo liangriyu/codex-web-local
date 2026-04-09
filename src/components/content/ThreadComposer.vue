@@ -37,8 +37,7 @@
       </ul>
 
       <div class="thread-composer-controls">
-        <div class="thread-composer-main-controls">
-          <div class="thread-composer-config-group">
+        <div class="thread-composer-config-group">
             <div ref="actionsMenuRef" class="thread-composer-actions">
           <input
             ref="fileInputRef"
@@ -135,47 +134,8 @@
           />
         </div>
 
-          <div class="thread-composer-action-group">
-            <button
-              v-if="shouldShowVoiceButton"
-              class="thread-composer-voice-button"
-              type="button"
-              :aria-label="voiceButtonLabel"
-              :title="voiceButtonLabel"
-              :disabled="isVoiceButtonDisabled"
-              :data-state="voiceInputState"
-              @click="onVoiceInputButtonClick"
-            >
-              <svg class="thread-composer-voice-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M12 4a3 3 0 0 0-3 3v4a3 3 0 1 0 6 0V7a3 3 0 0 0-3-3Zm-5 7a1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11a1 1 0 1 0-2 0 5 5 0 1 1-10 0Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </button>
-            <button
-              v-if="shouldShowStopButton"
-              class="thread-composer-stop"
-              type="button"
-              aria-label="Стоп"
-              :disabled="disabled || !activeThreadId || isInterruptingTurn"
-              @click="onInterrupt"
-            >
-              <IconTablerPlayerStopFilled class="thread-composer-stop-icon" />
-            </button>
-            <button
-              v-else
-              class="thread-composer-submit"
-              type="submit"
-              aria-label="Send message"
-              :disabled="!canSubmit"
-            >
-              <IconTablerArrowUp class="thread-composer-submit-icon" />
-            </button>
-          </div>
-        </div>
-
-        <div v-if="activeThreadId" class="thread-composer-status-group">
+        <div class="thread-composer-main-controls">
+          <div v-if="activeThreadId" class="thread-composer-status-group">
           <div
             v-if="shouldShowBranchChip"
             ref="branchMenuRef"
@@ -363,6 +323,97 @@
             </div>
           </div>
 
+          <div
+            v-if="activeThreadId"
+            ref="mobileStatusRef"
+            class="thread-composer-mobile-status-wrap"
+          >
+            <button
+              class="thread-composer-mobile-status-button"
+              type="button"
+              :aria-expanded="isMobileStatusPanelOpen"
+              :aria-label="mobileStatusButtonLabel"
+              :title="mobileStatusButtonLabel"
+              :data-level="mobileStatusLevel"
+              @click="toggleMobileStatusPanel"
+            >
+              <span class="thread-composer-mobile-status-orb" aria-hidden="true">
+                <span class="thread-composer-mobile-status-orb-core" />
+              </span>
+              <span
+                class="thread-composer-mobile-status-context-dot thread-composer-mobile-status-context-dot-floating"
+                :data-level="contextLevel"
+                aria-hidden="true"
+              />
+            </button>
+
+            <button
+              v-if="isMobileStatusPanelOpen"
+              class="thread-composer-mobile-status-backdrop"
+              type="button"
+              :aria-label="mobileStatusPanelTitle"
+              tabindex="-1"
+              @click="closeMobileStatusPanel"
+            />
+
+            <div
+              v-if="isMobileStatusPanelOpen"
+              class="thread-composer-mobile-status-panel"
+              role="dialog"
+              :aria-label="mobileStatusPanelTitle"
+              aria-modal="true"
+            >
+              <div class="thread-composer-mobile-status-panel-header">
+                <div class="thread-composer-mobile-status-panel-handle" aria-hidden="true" />
+                <p class="thread-composer-mobile-status-panel-title">{{ mobileStatusPanelTitle }}</p>
+                <button
+                  type="button"
+                  class="thread-composer-mobile-status-panel-close"
+                  :aria-label="mobileStatusPanelTitle"
+                  @click="closeMobileStatusPanel"
+                >
+                  <IconTablerX class="thread-composer-mobile-status-panel-close-icon" />
+                </button>
+              </div>
+
+              <section class="thread-composer-mobile-status-panel-section">
+                <div class="thread-composer-mobile-status-panel-section-header">
+                  <p class="thread-composer-mobile-status-panel-section-title">{{ tUi(normalizedLanguage, 'composer.quotaRemainingTitle') }}</p>
+                  <p class="thread-composer-mobile-status-panel-section-summary">{{ mobileQuotaSummaryText }}</p>
+                </div>
+                <p v-if="quotaWindowRows.length === 0" class="thread-composer-mobile-status-panel-line">{{ tUi(normalizedLanguage, 'composer.quotaDataUnavailable') }}</p>
+                <div
+                  v-for="(row, index) in quotaWindowRows"
+                  :key="`mobile-quota-window-${index}`"
+                  class="thread-composer-mobile-status-panel-row"
+                >
+                  <span class="thread-composer-mobile-status-panel-row-duration">{{ row.durationText }}</span>
+                  <span class="thread-composer-mobile-status-panel-row-percent">{{ row.remainingPercentText }}</span>
+                  <span class="thread-composer-mobile-status-panel-row-reset">{{ row.resetAtText }}</span>
+                </div>
+                <p v-if="aiCreditsLabel" class="thread-composer-mobile-status-panel-line">{{ aiCreditsLabel }}</p>
+              </section>
+
+              <section class="thread-composer-mobile-status-panel-section">
+                <div class="thread-composer-mobile-status-panel-section-header">
+                  <p class="thread-composer-mobile-status-panel-section-title">{{ mobileContextPanelTitle }}</p>
+                  <p class="thread-composer-mobile-status-panel-section-summary">{{ mobileContextCompactLabel }}</p>
+                </div>
+                <p class="thread-composer-mobile-status-panel-line">{{ contextUsageSummaryLabel }}</p>
+                <p class="thread-composer-mobile-status-panel-line">{{ contextTokenSummaryLabel }}</p>
+                <p class="thread-composer-mobile-status-panel-hint">{{ tUi(normalizedLanguage, 'composer.contextAutoCompressHint') }}</p>
+                <button
+                  class="thread-composer-compact-button thread-composer-mobile-status-panel-action"
+                  type="button"
+                  :disabled="!canCompactContext || isCompactingContext"
+                  @click="onCompactContext"
+                >
+                  {{ isCompactingContext ? tUi(normalizedLanguage, 'composer.compacting') : tUi(normalizedLanguage, 'composer.compactNow') }}
+                </button>
+              </section>
+            </div>
+          </div>
+
           <div class="thread-composer-quota-wrap">
             <div
               v-if="quotaDisplayRows.length > 0"
@@ -451,6 +502,46 @@
                 {{ isCompactingContext ? tUi(normalizedLanguage, 'composer.compacting') : tUi(normalizedLanguage, 'composer.compactNow') }}
               </button>
             </div>
+          </div>
+          </div>
+
+          <div class="thread-composer-action-group">
+            <button
+              v-if="shouldShowVoiceButton"
+              class="thread-composer-voice-button"
+              type="button"
+              :aria-label="voiceButtonLabel"
+              :title="voiceButtonLabel"
+              :disabled="isVoiceButtonDisabled"
+              :data-state="voiceInputState"
+              @click="onVoiceInputButtonClick"
+            >
+              <svg class="thread-composer-voice-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 4a3 3 0 0 0-3 3v4a3 3 0 1 0 6 0V7a3 3 0 0 0-3-3Zm-5 7a1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11a1 1 0 1 0-2 0 5 5 0 1 1-10 0Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
+            <button
+              v-if="shouldShowStopButton"
+              class="thread-composer-stop"
+              type="button"
+              aria-label="Стоп"
+              :disabled="disabled || !activeThreadId || isInterruptingTurn"
+              @click="onInterrupt"
+            >
+              <IconTablerPlayerStopFilled class="thread-composer-stop-icon" />
+            </button>
+            <button
+              v-else
+              class="thread-composer-submit"
+              type="submit"
+              aria-label="Send message"
+              :disabled="!canSubmit"
+            >
+              <IconTablerArrowUp class="thread-composer-submit-icon" />
+            </button>
           </div>
         </div>
 
@@ -565,8 +656,10 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const actionsMenuRef = ref<HTMLElement | null>(null)
 const branchMenuRef = ref<HTMLElement | null>(null)
+const mobileStatusRef = ref<HTMLElement | null>(null)
 const isActionsMenuOpen = ref(false)
 const isBranchMenuOpen = ref(false)
+const isMobileStatusPanelOpen = ref(false)
 const newBranchName = ref('')
 const pastedImages = ref<ComposerImageInput[]>([])
 const voiceInputSupport = detectVoiceInputSupport()
@@ -933,6 +1026,40 @@ const quotaLevel = computed<'normal' | 'warn' | 'danger'>(() => {
   }
   
   return toQuotaLevel(minRemaining)
+})
+const mobileQuotaSummaryText = computed(() => {
+  const summaries = quotaDisplayRows.value.map((row) => row.displayLabel)
+  if (summaries.length > 0) {
+    return summaries.join(' · ')
+  }
+  return rateLimitSummaryLabel.value || tUi(normalizedLanguage.value, 'composer.quotaDataUnavailable')
+})
+const mobileContextCompactLabel = computed(() => {
+  const prefix = normalizedLanguage.value === 'zh' ? '上下文' : 'Context'
+  return `${prefix} ${contextUsedPercentText.value}`
+})
+const mobileContextPanelTitle = computed(() =>
+  normalizedLanguage.value === 'zh' ? '背景信息窗口' : 'Context window',
+)
+const mobileStatusPanelTitle = computed(() =>
+  normalizedLanguage.value === 'zh' ? '额度与背景信息' : 'Quota & context',
+)
+const mobileStatusButtonLabel = computed(() =>
+  `${mobileQuotaSummaryText.value} · ${mobileContextCompactLabel.value}`,
+)
+function getStatusWeight(level: 'normal' | 'warn' | 'danger' | 'idle' | 'ok'): number {
+  if (level === 'danger') return 3
+  if (level === 'warn') return 2
+  if (level === 'ok' || level === 'normal') return 1
+  return 0
+}
+const mobileStatusLevel = computed<'normal' | 'warn' | 'danger'>(() => {
+  const quotaWeight = getStatusWeight(quotaLevel.value)
+  const contextWeight = getStatusWeight(contextLevel.value)
+  const maxWeight = Math.max(quotaWeight, contextWeight)
+  if (maxWeight >= 3) return 'danger'
+  if (maxWeight >= 2) return 'warn'
+  return 'normal'
 })
 function formatWindowDuration(minutes: number | null): string {
   if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) {
@@ -1344,12 +1471,26 @@ function toggleBranchMenu(): void {
   const nextOpen = !isBranchMenuOpen.value
   isBranchMenuOpen.value = nextOpen
   if (nextOpen) {
+    closeMobileStatusPanel()
     emit('refresh-branches')
   }
 }
 
 function closeBranchMenu(): void {
   isBranchMenuOpen.value = false
+}
+
+function toggleMobileStatusPanel(): void {
+  if (!props.activeThreadId) return
+  const nextOpen = !isMobileStatusPanelOpen.value
+  isMobileStatusPanelOpen.value = nextOpen
+  if (nextOpen) {
+    closeBranchMenu()
+  }
+}
+
+function closeMobileStatusPanel(): void {
+  isMobileStatusPanelOpen.value = false
 }
 
 function onSelectUploadFiles(): void {
@@ -1392,6 +1533,10 @@ function onDocumentPointerDown(event: PointerEvent): void {
   const branchRoot = branchMenuRef.value
   if (isBranchMenuOpen.value && branchRoot && !branchRoot.contains(target)) {
     closeBranchMenu()
+  }
+  const mobileStatusRoot = mobileStatusRef.value
+  if (isMobileStatusPanelOpen.value && mobileStatusRoot && !mobileStatusRoot.contains(target)) {
+    closeMobileStatusPanel()
   }
 }
 
@@ -1465,6 +1610,7 @@ watch(
     resetVoiceInputState()
     closeActionsMenu()
     closeBranchMenu()
+    closeMobileStatusPanel()
     newBranchName.value = ''
   },
 )
@@ -1514,15 +1660,16 @@ watch(
 }
 
 .thread-composer-main-controls {
-  @apply flex min-w-0 flex-1 items-center gap-4;
+  @apply ml-auto flex min-w-0 items-center gap-3;
 }
 
 .thread-composer-config-group {
-  @apply flex min-w-0 items-center gap-4;
+  @apply flex min-w-0 flex-1 items-center gap-4;
 }
 
 .thread-composer-action-group {
-  @apply ml-auto flex items-center gap-2;
+  @apply flex items-center gap-2;
+  flex: 0 0 auto;
 }
 
 .thread-composer-control {
@@ -1647,7 +1794,8 @@ watch(
 }
 
 .thread-composer-status-group {
-  @apply ml-auto flex items-center gap-1.5;
+  @apply flex items-center gap-1.5;
+  min-width: 0;
 }
 
 .thread-composer-status-chip {
@@ -1672,6 +1820,177 @@ watch(
 
 .thread-composer-branch-wrap {
   @apply relative;
+}
+
+.thread-composer-mobile-status-wrap {
+  @apply hidden relative;
+}
+
+.thread-composer-mobile-status-button {
+  @apply relative items-center justify-center rounded-full border text-left transition;
+  display: flex;
+  width: 2.5rem;
+  min-width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border-color: color-mix(in srgb, var(--color-border-default) 90%, white);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-surface) 96%, white), color-mix(in srgb, var(--color-bg-muted) 92%, white));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 10px 30px -18px rgba(15, 23, 42, 0.4);
+}
+
+.thread-composer-mobile-status-button:hover {
+  border-color: color-mix(in srgb, var(--color-border-strong) 70%, white);
+  transform: translateY(-1px);
+}
+
+.thread-composer-mobile-status-button[data-level='normal'] {
+  border-color: color-mix(in srgb, #bbf7d0 60%, var(--color-border-default));
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.88), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, #ecfdf5 92%, white), color-mix(in srgb, var(--color-bg-surface) 92%, white));
+}
+
+.thread-composer-mobile-status-button[data-level='warn'] {
+  border-color: color-mix(in srgb, #fde68a 68%, var(--color-border-default));
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.88), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, #fffbeb 94%, white), color-mix(in srgb, #fef3c7 72%, white));
+}
+
+.thread-composer-mobile-status-button[data-level='danger'] {
+  border-color: color-mix(in srgb, #fecdd3 70%, var(--color-border-default));
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.88), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, #fff1f2 94%, white), color-mix(in srgb, #ffe4e6 72%, white));
+}
+
+.thread-composer-mobile-status-orb {
+  @apply inline-flex h-4 w-4 items-center justify-center rounded-full;
+  background: color-mix(in srgb, var(--color-bg-overlay) 74%, white);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+}
+
+.thread-composer-mobile-status-orb-core {
+  @apply h-2.5 w-2.5 rounded-full;
+  background: currentColor;
+}
+
+.thread-composer-mobile-status-button[data-level='normal'] .thread-composer-mobile-status-orb {
+  color: #16a34a;
+}
+
+.thread-composer-mobile-status-button[data-level='warn'] .thread-composer-mobile-status-orb {
+  color: #ca8a04;
+}
+
+.thread-composer-mobile-status-context-dot {
+  @apply h-2 w-2 rounded-full;
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.92);
+}
+
+.thread-composer-mobile-status-button[data-level='danger'] .thread-composer-mobile-status-orb {
+  color: #e11d48;
+}
+
+.thread-composer-mobile-status-context-dot[data-level='ok'] {
+  background: #16a34a;
+}
+
+.thread-composer-mobile-status-context-dot[data-level='warn'] {
+  background: #ca8a04;
+}
+
+.thread-composer-mobile-status-context-dot[data-level='danger'] {
+  background: #e11d48;
+}
+
+.thread-composer-mobile-status-context-dot-floating {
+  @apply absolute right-[0.38rem] bottom-[0.38rem];
+}
+
+.thread-composer-mobile-status-backdrop {
+  @apply hidden;
+}
+
+.thread-composer-mobile-status-panel {
+  @apply hidden;
+}
+
+.thread-composer-mobile-status-panel-section {
+  @apply rounded-2xl border px-3 py-3;
+  border-color: color-mix(in srgb, var(--color-border-default) 88%, white);
+  background: color-mix(in srgb, var(--color-bg-surface) 94%, white);
+}
+
+.thread-composer-mobile-status-panel-section + .thread-composer-mobile-status-panel-section {
+  @apply mt-3;
+}
+
+.thread-composer-mobile-status-panel-section-header {
+  @apply flex items-start justify-between gap-3;
+}
+
+.thread-composer-mobile-status-panel-section-title {
+  @apply m-0 text-xs font-semibold;
+  color: var(--color-text-primary);
+}
+
+.thread-composer-mobile-status-panel-section-summary {
+  @apply m-0 text-[10px] leading-4 text-right;
+  color: var(--color-text-muted);
+}
+
+.thread-composer-mobile-status-panel-line {
+  @apply m-0 mt-2 text-[11px] leading-4;
+  color: var(--color-text-secondary);
+}
+
+.thread-composer-mobile-status-panel-row {
+  @apply mt-2 grid grid-cols-[1fr_auto_auto] items-center gap-2 rounded-xl px-2 py-2 text-[11px];
+  background: color-mix(in srgb, var(--color-bg-muted) 84%, white);
+}
+
+.thread-composer-mobile-status-panel-row-duration {
+  @apply font-semibold;
+  color: var(--color-text-primary);
+}
+
+.thread-composer-mobile-status-panel-row-percent,
+.thread-composer-mobile-status-panel-row-reset {
+  color: var(--color-text-muted);
+}
+
+.thread-composer-mobile-status-panel-hint {
+  @apply m-0 mt-2 text-[11px] leading-4 font-medium;
+  color: var(--color-text-primary);
+}
+
+.thread-composer-mobile-status-panel-action {
+  @apply mt-3;
+}
+
+.thread-composer-mobile-status-panel-header {
+  @apply hidden;
+}
+
+.thread-composer-mobile-status-panel-handle {
+  @apply hidden;
+}
+
+.thread-composer-mobile-status-panel-title {
+  @apply m-0;
+}
+
+.thread-composer-mobile-status-panel-close {
+  @apply hidden;
+}
+
+.thread-composer-mobile-status-panel-close-icon {
+  @apply h-4 w-4;
 }
 
 .thread-composer-branch-button {
@@ -2108,35 +2427,45 @@ watch(
   }
 
   .thread-composer-controls {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.5rem;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.375rem;
+    flex-wrap: nowrap;
   }
 
   .thread-composer-main-controls {
-    width: 100%;
-    gap: 0.5rem;
+    min-width: 0;
+    margin-left: 0;
+    width: auto;
+    flex: 1 1 auto;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 0.375rem;
   }
 
   .thread-composer-config-group {
-    @apply min-w-0 flex-1 gap-2;
+    @apply min-w-0 gap-1.5;
+    width: auto;
+    flex: 0 1 auto;
   }
 
   .thread-composer-action-group {
-    @apply ml-auto gap-2;
+    @apply ml-auto gap-1.5;
     flex: 0 0 auto;
   }
 
   .thread-composer-actions-trigger,
   .thread-composer-voice-button,
+  .thread-composer-mobile-status-button,
   .thread-composer-submit,
   .thread-composer-stop {
-    width: 2.5rem;
-    height: 2.5rem;
-    min-width: 2.5rem;
-    max-width: 2.5rem;
+    width: 2.25rem;
+    height: 2.25rem;
+    min-width: 2.25rem;
+    max-width: 2.25rem;
     padding: 0;
-    flex: 0 0 2.5rem;
+    flex: 0 0 2.25rem;
     justify-content: center;
   }
 
@@ -2147,40 +2476,138 @@ watch(
 
   .thread-composer-control :deep(.composer-dropdown-trigger) {
     min-width: 0;
+    gap: 0.25rem;
+    font-size: 10px;
+  }
+
+  .thread-composer-control :deep(.composer-dropdown-trigger-icon) {
+    height: 0.875rem;
+    width: 0.875rem;
+  }
+
+  .thread-composer-control :deep(.composer-dropdown-chevron) {
+    height: 0.675rem;
+    width: 0.675rem;
   }
 
   .thread-composer-status-group {
-    @apply min-w-0 gap-1;
-    width: 100%;
+    @apply min-w-0 gap-1.5;
+    width: auto;
+    flex: 0 0 auto;
     margin-left: 0;
     justify-content: flex-start;
-    flex-wrap: wrap;
+    align-items: center;
+    flex-wrap: nowrap;
+    overflow: hidden;
   }
 
   .thread-composer-branch-wrap {
-    min-width: 0;
-    flex: 0 1 auto;
-    max-width: min(12rem, 55vw);
+    min-width: auto;
+    flex: 0 0 auto;
+    max-width: none;
   }
 
   .thread-composer-branch-button {
-    width: auto;
-    min-width: 0;
-    min-height: 2.5rem;
-    max-width: 100%;
-    padding: 0 0.625rem;
-    gap: 0.375rem;
-    flex: 0 1 auto;
-    justify-content: flex-start;
+    width: 2.25rem;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    max-width: none;
+    padding: 0;
+    gap: 0;
+    flex: 0 0 2.25rem;
+    justify-content: center;
+    border-radius: 999px;
   }
 
   .thread-composer-branch-text {
-    display: inline;
+    display: none;
+  }
+
+  .thread-composer-branch-chevron {
+    display: none;
+  }
+
+  .thread-composer-branch-icon {
+    @apply h-4 w-4;
+  }
+
+  .thread-composer-mobile-status-wrap {
+    @apply flex;
+    min-width: auto;
+    flex: 0 0 auto;
   }
 
   .thread-composer-quota-wrap,
   .thread-composer-context-wrap {
-    flex: 0 0 auto;
+    display: none;
+  }
+
+  .thread-composer-mobile-status-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+    display: block;
+    background: color-mix(in srgb, var(--color-bg-overlay) 54%, transparent);
+    backdrop-filter: blur(6px);
+  }
+
+  .thread-composer-mobile-status-panel {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+    z-index: 30;
+    display: block;
+    width: auto;
+    max-width: 32.5rem;
+    max-height: min(70vh, 30rem);
+    margin: 0 auto;
+    padding: 0.75rem;
+    border-radius: 1.25rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid color-mix(in srgb, var(--color-border-default) 88%, white);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--color-bg-surface) 96%, white), color-mix(in srgb, var(--color-bg-muted) 90%, white));
+    box-shadow: 0 24px 80px color-mix(in srgb, black 20%, transparent);
+  }
+
+  .thread-composer-mobile-status-panel-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    margin: -0.75rem -0.75rem 0.5rem;
+    padding: 0.5rem 0.75rem 0.25rem;
+    background: color-mix(in srgb, var(--color-bg-surface) 96%, transparent);
+  }
+
+  .thread-composer-mobile-status-panel-handle {
+    display: block;
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: 2.25rem;
+    height: 0.25rem;
+    margin: 0 auto 0.25rem;
+    border-radius: 999px;
+    background: var(--color-border-default);
+  }
+
+  .thread-composer-mobile-status-panel-title {
+    @apply text-sm font-semibold;
+    grid-column: 1;
+    grid-row: 2;
+    color: var(--color-text-primary);
+  }
+
+  .thread-composer-mobile-status-panel-close {
+    @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-zinc-50 text-zinc-500 transition hover:bg-zinc-100;
+    grid-column: 2;
+    grid-row: 2;
+    border-color: color-mix(in srgb, var(--color-border-default) 88%, white);
   }
 
   .thread-composer-branch-sheet-backdrop {
