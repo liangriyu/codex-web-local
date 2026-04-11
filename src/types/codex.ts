@@ -102,6 +102,50 @@ export type UiRateLimitUsage = {
   planType: string | null
 }
 
+export type UiAccountAuthMode = 'apiKey' | 'chatgpt' | 'chatgptAuthTokens'
+export type UiForcedLoginMethod = 'apiKey' | 'chatgpt'
+export type UiAccountStatus = 'loading' | 'logged_out' | 'logged_in' | 'reauth_required' | 'error'
+export type UiAccountCenterView = 'overview' | 'login_methods' | 'login_progress'
+export type UiAccountLoginFlow =
+  | 'idle'
+  | 'selecting_method'
+  | 'opening_oauth'
+  | 'waiting_completion'
+  | 'api_key_form'
+  | 'success'
+  | 'failed'
+
+export type UiAccount = {
+  type: 'apiKey' | 'chatgpt'
+  email: string | null
+  planType: string | null
+}
+
+export type UiAccountSnapshot = {
+  account: UiAccount | null
+  authMode: UiAccountAuthMode | null
+  requiresOpenaiAuth: boolean
+}
+
+export type UiAccountLoginRequest =
+  | {
+      type: 'chatgpt'
+    }
+  | {
+      type: 'apiKey'
+      apiKey: string
+    }
+
+export type UiAccountLoginStartResult = {
+  type: UiAccountAuthMode
+  loginId: string | null
+  authUrl: string | null
+}
+
+export type UiCodexConfigSnapshot = {
+  forcedLoginMethod: UiForcedLoginMethod | null
+}
+
 export type UiMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'

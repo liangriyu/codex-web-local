@@ -160,6 +160,206 @@ const UI_TEXT = {
     zh: ({ message }) => `最近错误：${String(message)}`,
     en: ({ message }) => `Latest error: ${String(message)}`,
   },
+  'app.accountCenter': {
+    zh: '账号中心',
+    en: 'Account Center',
+  },
+  'app.accountCenterTitle': {
+    zh: '管理 OpenAI / Codex 账号',
+    en: 'Manage your OpenAI / Codex account',
+  },
+  'app.accountCenterSubtitle': {
+    zh: '这里管理的是底层账号登录，不是当前 Web 服务访问密码。',
+    en: 'This manages the underlying account login, not the web access password.',
+  },
+  'app.accountCenterClose': {
+    zh: '关闭账号中心',
+    en: 'Close account center',
+  },
+  'app.accountCenterCurrentAccount': {
+    zh: '当前账号',
+    en: 'Current account',
+  },
+  'app.accountCenterStatusLoading': {
+    zh: '读取中',
+    en: 'Loading',
+  },
+  'app.accountCenterStatusLoggedIn': {
+    zh: '已登录',
+    en: 'Logged in',
+  },
+  'app.accountCenterStatusLoggedOut': {
+    zh: '未登录',
+    en: 'Logged out',
+  },
+  'app.accountCenterStatusReauthRequired': {
+    zh: '需要重新认证',
+    en: 'Re-auth required',
+  },
+  'app.accountCenterStatusError': {
+    zh: '状态异常',
+    en: 'Status error',
+  },
+  'app.accountCenterAuthMode': {
+    zh: '登录方式',
+    en: 'Auth mode',
+  },
+  'app.accountCenterModeChatgpt': {
+    zh: 'ChatGPT 登录',
+    en: 'ChatGPT login',
+  },
+  'app.accountCenterModeApiKey': {
+    zh: 'API Key',
+    en: 'API Key',
+  },
+  'app.accountCenterEmail': {
+    zh: '邮箱',
+    en: 'Email',
+  },
+  'app.accountCenterPlan': {
+    zh: '套餐',
+    en: 'Plan',
+  },
+  'app.accountCenterPlanUnknown': {
+    zh: '未识别',
+    en: 'Unknown',
+  },
+  'app.accountCenterApiKeyAccount': {
+    zh: 'API Key 账号',
+    en: 'API Key account',
+  },
+  'app.accountCenterNotLoggedIn': {
+    zh: '还没有连接 OpenAI / Codex 账号',
+    en: 'No OpenAI / Codex account is connected yet',
+  },
+  'app.accountCenterLoggedOutHint': {
+    zh: '登录后即可在手机端查看账号状态、重新认证或退出登录。',
+    en: 'Sign in to review status, re-authenticate, or log out from mobile.',
+  },
+  'app.accountCenterRequiresOpenaiAuth': {
+    zh: '当前会话需要重新完成 OpenAI 认证，请重新发起登录。',
+    en: 'This session needs OpenAI authentication again. Please sign in again.',
+  },
+  'app.accountCenterErrorFallback': {
+    zh: '账号状态读取失败，请刷新后重试。',
+    en: 'Failed to read account status. Refresh and try again.',
+  },
+  'app.accountCenterQuotaTitle': {
+    zh: '额度快照',
+    en: 'Quota snapshot',
+  },
+  'app.accountCenterQuotaUsed': {
+    zh: '已用',
+    en: 'Used',
+  },
+  'app.accountCenterQuotaRemaining': {
+    zh: '剩余',
+    en: 'Remaining',
+  },
+  'app.accountCenterChooseMethod': {
+    zh: '选择登录方式',
+    en: 'Choose sign-in method',
+  },
+  'app.accountCenterChooseMethodHint': {
+    zh: '首版支持 ChatGPT 和 API Key，两种方式都直接走 app-server 协议。',
+    en: 'The first version supports ChatGPT and API Key via app-server directly.',
+  },
+  'app.accountCenterChangeAccount': {
+    zh: '切换账号',
+    en: 'Switch account',
+  },
+  'app.accountCenterLogout': {
+    zh: '退出登录',
+    en: 'Log out',
+  },
+  'app.accountCenterLogoutConfirm': {
+    zh: '确认退出当前 OpenAI / Codex 账号吗？',
+    en: 'Log out of the current OpenAI / Codex account?',
+  },
+  'app.accountCenterReauth': {
+    zh: '重新认证',
+    en: 'Re-authenticate',
+  },
+  'app.accountCenterRefresh': {
+    zh: '刷新状态',
+    en: 'Refresh',
+  },
+  'app.accountCenterBack': {
+    zh: '返回',
+    en: 'Back',
+  },
+  'app.accountCenterLoginWithChatgpt': {
+    zh: '使用 ChatGPT 登录',
+    en: 'Continue with ChatGPT',
+  },
+  'app.accountCenterLoginWithChatgptHint': {
+    zh: '打开授权页完成登录，完成后会自动刷新当前状态。',
+    en: 'Open the authorization page and refresh automatically when done.',
+  },
+  'app.accountCenterLoginWithApiKey': {
+    zh: '使用 API Key 登录',
+    en: 'Continue with API Key',
+  },
+  'app.accountCenterLoginWithApiKeyHint': {
+    zh: '适合已有 API Key 的账号，输入后会直接在当前页校验。',
+    en: 'Best for accounts that already have an API key. Validation happens inline.',
+  },
+  'app.accountCenterApiKeyFormHint': {
+    zh: '只会通过 `account/login/start` 提交到 app-server，不会和 Web 访问密码混用。',
+    en: 'The key is submitted only through `account/login/start`, separate from web access password.',
+  },
+  'app.accountCenterApiKeyLabel': {
+    zh: 'API Key',
+    en: 'API Key',
+  },
+  'app.accountCenterApiKeyPlaceholder': {
+    zh: '粘贴 sk-... 或兼容格式的 API Key',
+    en: 'Paste an sk-... or compatible API key',
+  },
+  'app.accountCenterApiKeySubmit': {
+    zh: '提交并登录',
+    en: 'Submit and sign in',
+  },
+  'app.accountCenterOAuthOpening': {
+    zh: '正在打开授权页',
+    en: 'Opening authorization page',
+  },
+  'app.accountCenterOAuthOpeningHint': {
+    zh: '如果浏览器拦截了新页，请手动点击重新打开。',
+    en: 'If the browser blocks the new page, reopen it manually.',
+  },
+  'app.accountCenterOAuthWaiting': {
+    zh: '等待授权完成',
+    en: 'Waiting for authorization',
+  },
+  'app.accountCenterOAuthWaitingHint': {
+    zh: '授权完成后这里会自动刷新。你也可以取消本次登录并重新选择方式。',
+    en: 'This view refreshes automatically when authorization finishes. You can also cancel and choose again.',
+  },
+  'app.accountCenterOAuthWaitingHostHint': {
+    zh: '这个授权页会在运行 codex-web-local 的宿主机浏览器中打开，因为回调地址是本机 localhost。完成后这里会自动刷新。',
+    en: 'This auth page opens in the host machine browser running codex-web-local because the callback uses localhost. This view will refresh automatically when it completes.',
+  },
+  'app.accountCenterOAuthFailedHint': {
+    zh: '授权流程没有完成，可以重试或返回重新选择登录方式。',
+    en: 'The authorization flow did not complete. Retry or go back to choose a method.',
+  },
+  'app.accountCenterReopenAuth': {
+    zh: '重新打开授权页',
+    en: 'Reopen auth page',
+  },
+  'app.accountCenterCancelLogin': {
+    zh: '取消登录',
+    en: 'Cancel login',
+  },
+  'app.accountCenterRetry': {
+    zh: '重试',
+    en: 'Retry',
+  },
+  'app.accountCenterNote': {
+    zh: '这里操作的是底层 OpenAI / Codex 账号；站点访问密码仍由当前 Web 服务单独保护。',
+    en: 'This controls the underlying OpenAI / Codex account. The site access password remains separate.',
+  },
   'composer.model': {
     zh: '模型',
     en: 'Model',

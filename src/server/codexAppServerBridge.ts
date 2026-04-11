@@ -1,7 +1,7 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, platform, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 // @ts-ignore - tests import this TypeScript module directly via node:test.
@@ -105,9 +105,11 @@ const SHARED_SESSION_RPC_TRIGGER_METHODS = new Set([
 ])
 const PRIVATE_VOICE_INPUT_CAPABILITY_METHOD = 'web-local/voice-input/capability/read'
 const PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD = 'web-local/voice-input/transcription/create'
+const PRIVATE_BROWSER_OPEN_METHOD = 'web-local/browser/open'
 const PRIVATE_RPC_METHODS = [
   PRIVATE_VOICE_INPUT_CAPABILITY_METHOD,
   PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
+  PRIVATE_BROWSER_OPEN_METHOD,
 ]
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -188,6 +190,40 @@ class PrivateRpcError extends Error {
     this.code = code
     this.statusCode = statusCode
   }
+}
+
+function openUrlInHostBrowser(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (platform() === 'darwin') {
+      execFile('open', [url], (error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve()
+      })
+      return
+    }
+
+    if (platform() === 'win32') {
+      execFile('cmd', ['/c', 'start', '', url], (error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve()
+      })
+      return
+    }
+
+    execFile('xdg-open', [url], (error) => {
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve()
+    })
+  })
 }
 
 function normalizePreviewPath(rawPath: string): string {
@@ -1349,9 +1385,43 @@ class AppServerProcess {
     }
   }
 
+  private async handleBrowserOpenPrivateRpc(params: unknown): Promise<unknown> {
+    const body = asRecord(params)
+    const rawUrl = readText(body?.url)
+    if (!rawUrl) {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    let parsed: URL
+    try {
+      parsed = new URL(rawUrl)
+    } catch {
+      throw new PrivateRpcError(-32602, 'Invalid URL', 400)
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new PrivateRpcError(-32602, 'Only http(s) URLs are supported', 400)
+    }
+
+    try {
+      await openUrlInHostBrowser(parsed.toString())
+      return { opened: true }
+    } catch (error) {
+      throw new PrivateRpcError(
+        -32020,
+        getErrorMessage(error, 'Failed to open URL in host browser'),
+        500,
+      )
+    }
+  }
+
   private async handlePrivateRpc(method: string, params: unknown): Promise<unknown> {
     if (method === PRIVATE_VOICE_INPUT_CAPABILITY_METHOD || method === PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD) {
       return this.handleVoiceInputPrivateRpc(method, params)
+    }
+
+    if (method === PRIVATE_BROWSER_OPEN_METHOD) {
+      return this.handleBrowserOpenPrivateRpc(params)
     }
 
     return PRIVATE_RPC_NOT_HANDLED

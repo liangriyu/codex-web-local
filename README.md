@@ -85,12 +85,18 @@ npm run dev -- --host 0.0.0.0 --daemon
 
 When started with password protection (default), the server prints the password to the console. Open the URL in your browser, enter the password, and you're in.
 
+That web access password only protects the `codex-web-local` site itself. It is separate from the OpenAI / Codex account shown inside the UI's Account Center.
+
 ## UI Highlights
 
 - Composer status bar now shows:
   - current git branch
   - context window usage ring with detailed hover info
   - remaining quota hover card
+- Sidebar and mobile header now expose a first-level Account Center entry:
+  - review the current OpenAI / Codex account state
+  - switch between ChatGPT login and API Key login
+  - log out or re-authenticate without changing the web access password
 - Composer now supports voice input:
   - browsers with native speech recognition can fill transcripts back into the composer
   - browsers without native recognition can use a server-side voice fallback only when the server explicitly enables it
@@ -115,6 +121,7 @@ When started with password protection (default), the server prints the password 
   - `ZHIPU_API_KEY`
   - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
 - iPhone and LAN browser access should still prefer HTTPS when using browser recording fallback.
+- Mobile ChatGPT OAuth may open a new tab or external browser. If the page reloads, reopen Account Center and it will refresh from `account/read`.
 
 ## Daemon Notes
 

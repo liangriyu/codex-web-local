@@ -85,12 +85,18 @@ npm run dev -- --host 0.0.0.0 --daemon
 
 默认开启密码保护时，服务会在控制台打印密码。浏览器打开 URL 后输入密码即可访问。
 
+这里的 Web 访问密码只负责保护 `codex-web-local` 站点入口；界面里的“账号中心”管理的是底层 OpenAI / Codex 账号，两者是两套独立鉴权。
+
 ## 界面与交互更新
 
 - 输入框底部状态区新增：
   - 当前 git 分支
   - context window 用量圆环（hover 显示详细信息）
   - 剩余额度悬浮卡片
+- 左侧栏和移动端顶部新增一级“账号中心”入口：
+  - 查看当前 OpenAI / Codex 账号状态
+  - 在 ChatGPT 登录和 API Key 登录之间切换
+  - 退出登录或重新认证，不影响 Web 访问密码
 - 输入器已支持语音输入：
   - 浏览器原生语音识别仍是主通道
   - 不支持原生识别时，只有服务端显式开启语音 fallback 才会展示录音入口
@@ -114,6 +120,7 @@ npm run dev -- --host 0.0.0.0 --daemon
   - `ZHIPU_API_KEY`
   - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
 - `iPhone` 或局域网浏览器使用录音回退时，仍建议通过 HTTPS 访问。
+- 手机端使用 ChatGPT OAuth 时，浏览器可能会打开新标签页或跳到外部浏览器；返回后重新打开“账号中心”，页面会基于 `account/read` 自动恢复最新状态。
 
 ## 守护进程说明
 

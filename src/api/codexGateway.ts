@@ -14,10 +14,16 @@ import {
   type RpcNotification,
 } from './codexRpcClient'
 import type {
+  Account,
+  CancelLoginAccountResponse,
   ConfigReadResponse,
+  ForcedLoginMethod,
+  GetAccountResponse,
   GetAccountRateLimitsResponse,
+  LoginAccountResponse,
   Model,
   ModelListResponse,
+  LogoutAccountResponse,
   ReasoningEffort,
   ReasoningEffortOption,
   ThreadListResponse,
@@ -33,6 +39,13 @@ import {
   normalizeThreadMessagesV2,
 } from './normalizers/v2'
 import type {
+  UiAccount,
+  UiAccountAuthMode,
+  UiAccountLoginRequest,
+  UiAccountLoginStartResult,
+  UiAccountSnapshot,
+  UiCodexConfigSnapshot,
+  UiForcedLoginMethod,
   ChatMode,
   UiMessage,
   UiPersistedServerRequest,
@@ -96,6 +109,10 @@ export type AccountRateLimitSnapshot = {
     balance: string | null
   } | null
   planType: string | null
+}
+
+type CancelAccountLoginResult = {
+  status: 'canceled' | 'notFound'
 }
 
 type RpcCallOptions = {
@@ -175,6 +192,74 @@ function normalizeReasoningEffort(value: unknown): ReasoningEffort | '' {
   return typeof value === 'string' && allowed.includes(value as ReasoningEffort)
     ? (value as ReasoningEffort)
     : ''
+}
+
+function normalizeAccountAuthMode(value: unknown): UiAccountAuthMode | null {
+  if (value === 'apikey') return 'apiKey'
+  if (value === 'chatgpt' || value === 'chatgptAuthTokens') {
+    return value
+  }
+  return null
+}
+
+function normalizeForcedLoginMethod(value: ForcedLoginMethod | unknown): UiForcedLoginMethod | null {
+  if (value === 'api') return 'apiKey'
+  if (value === 'chatgpt') return 'chatgpt'
+  return null
+}
+
+function normalizeAccount(value: Account | unknown): UiAccount | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Partial<Account>
+  if (row.type === 'apiKey') {
+    return {
+      type: 'apiKey',
+      email: null,
+      planType: null,
+    }
+  }
+  if (row.type === 'chatgpt') {
+    return {
+      type: 'chatgpt',
+      email: typeof row.email === 'string' && row.email.trim().length > 0 ? row.email.trim() : null,
+      planType: typeof row.planType === 'string' && row.planType.trim().length > 0 ? row.planType.trim() : null,
+    }
+  }
+  return null
+}
+
+function normalizeAccountSnapshot(
+  payload: GetAccountResponse,
+  fallbackAuthMode: unknown = null,
+): UiAccountSnapshot {
+  const account = normalizeAccount(payload.account)
+  return {
+    account,
+    authMode: normalizeAccountAuthMode(fallbackAuthMode) ?? (account?.type ?? null),
+    requiresOpenaiAuth: payload.requiresOpenaiAuth === true,
+  }
+}
+
+function normalizeAccountLoginResult(payload: LoginAccountResponse): UiAccountLoginStartResult {
+  if (payload.type === 'chatgpt') {
+    return {
+      type: 'chatgpt',
+      loginId: payload.loginId,
+      authUrl: payload.authUrl,
+    }
+  }
+  if (payload.type === 'chatgptAuthTokens') {
+    return {
+      type: 'chatgptAuthTokens',
+      loginId: null,
+      authUrl: null,
+    }
+  }
+  return {
+    type: 'apiKey',
+    loginId: null,
+    authUrl: null,
+  }
 }
 
 function normalizeWorkspaceDirtyKind(value: unknown): UiWorkspaceDirtyKind {
@@ -1022,6 +1107,70 @@ export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
   const model = payload.config.model ?? ''
   const reasoningEffort = normalizeReasoningEffort(payload.config.model_reasoning_effort)
   return { model, reasoningEffort }
+}
+
+export async function readCodexConfig(): Promise<UiCodexConfigSnapshot> {
+  const payload = await callRpc<ConfigReadResponse>('config/read', {
+    includeLayers: false,
+  })
+  return {
+    forcedLoginMethod: normalizeForcedLoginMethod(payload.config.forced_login_method),
+  }
+}
+
+export async function getAccountStatus(): Promise<UiAccountSnapshot> {
+  const payload = await callRpc<GetAccountResponse>('account/read', {
+    refreshToken: false,
+  })
+  return normalizeAccountSnapshot(payload)
+}
+
+export async function refreshAccountStatus(): Promise<UiAccountSnapshot> {
+  const payload = await callRpc<GetAccountResponse>('account/read', {
+    refreshToken: true,
+  })
+  return normalizeAccountSnapshot(payload)
+}
+
+export async function startAccountLogin(request: UiAccountLoginRequest): Promise<UiAccountLoginStartResult> {
+  const params = request.type === 'apiKey'
+    ? {
+        type: 'apiKey' as const,
+        apiKey: request.apiKey,
+      }
+    : {
+        type: 'chatgpt' as const,
+      }
+  const payload = await callRpc<LoginAccountResponse>('account/login/start', params)
+  return normalizeAccountLoginResult(payload)
+}
+
+export async function cancelAccountLogin(loginId: string): Promise<CancelAccountLoginResult> {
+  const normalizedLoginId = loginId.trim()
+  if (!normalizedLoginId) {
+    return { status: 'notFound' }
+  }
+  const payload = await callRpc<CancelLoginAccountResponse>('account/login/cancel', {
+    loginId: normalizedLoginId,
+  })
+  return {
+    status: payload.status === 'canceled' ? 'canceled' : 'notFound',
+  }
+}
+
+export async function logoutAccount(): Promise<void> {
+  await callRpc('account/logout')
+}
+
+export async function openUrlInHostBrowser(url: string): Promise<boolean> {
+  const normalizedUrl = url.trim()
+  if (!normalizedUrl) {
+    throw new Error('URL is required')
+  }
+  const payload = await callRpc<{ opened?: boolean }>('web-local/browser/open', {
+    url: normalizedUrl,
+  })
+  return payload.opened === true
 }
 
 function normalizeUsedPercent(value: unknown): number | null {

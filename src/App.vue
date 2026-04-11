@@ -60,6 +60,19 @@
 
         <div v-if="!isSidebarCollapsed" class="sidebar-footer-actions">
           <button
+            class="sidebar-account-button"
+            type="button"
+            :aria-label="accountCenterButtonLabel"
+            :title="accountCenterButtonLabel"
+            @click="onOpenAccountCenter"
+          >
+            <IconTablerUserCircle class="sidebar-account-button-icon" />
+            <span class="sidebar-account-button-copy">
+              <span class="sidebar-account-button-title">{{ t('app.accountCenter') }}</span>
+              <span class="sidebar-account-button-meta">{{ sidebarAccountSummary }}</span>
+            </span>
+          </button>
+          <button
             class="sidebar-footer-button"
             type="button"
             :aria-label="themeToggleLabel"
@@ -99,6 +112,16 @@
             />
           </template>
           <template #actions>
+            <button
+              class="content-header-account-button mobile-account-button"
+              :class="{ 'is-collapsed': isSidebarCollapsed }"
+              type="button"
+              :aria-label="accountCenterButtonLabel"
+              :title="accountCenterButtonLabel"
+              @click="onOpenAccountCenter"
+            >
+              <IconTablerUserCircle class="content-header-account-icon" />
+            </button>
             <button
               v-if="!isHomeRoute"
               class="content-header-diff-chip"
@@ -269,11 +292,39 @@
       </section>
     </template>
   </DesktopLayout>
+  <AccountCenterSheet
+    :open="accountCenterOpen"
+    :status="accountStatus"
+    :account="currentAccount"
+    :requires-openai-auth="requiresOpenaiAuth"
+    :rate-limit-snapshot="accountRateLimitSnapshot"
+    :available-methods="availableLoginMethods"
+    :view="accountCenterView"
+    :login-flow="loginFlow"
+    :pending-auth-url="pendingAuthUrl"
+    :opens-auth-on-host-browser="opensAuthOnHostBrowser"
+    :api-key-draft="apiKeyDraft"
+    :error="accountCenterError"
+    :ui-language="uiLanguage"
+    :is-busy="isAccountCenterBusy"
+    @close="onCloseAccountCenter"
+    @go-overview="onShowAccountOverview"
+    @show-methods="onShowAccountLoginMethods"
+    @show-api-key-form="onShowApiKeyForm"
+    @start-chatgpt-login="onStartChatgptLogin"
+    @update-api-key="onUpdateAccountApiKey"
+    @submit-api-key="onSubmitAccountApiKey"
+    @cancel-login="onCancelAccountLogin"
+    @reopen-auth="onReopenAccountAuth"
+    @logout="onLogoutAccount"
+    @refresh="onRefreshAccountCenter"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AccountCenterSheet from './components/account/AccountCenterSheet.vue'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
@@ -287,7 +338,9 @@ import type { PreviewPanelState } from './components/content/CodePreviewPanel.vu
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
+import IconTablerUserCircle from './components/icons/IconTablerUserCircle.vue'
 import IconThemeMode from './components/icons/IconThemeMode.vue'
+import { useAccountCenterState } from './composables/useAccountCenterState'
 import { useDesktopState } from './composables/useDesktopState'
 import { tUi, type UiLanguage, type UiTextKey } from './i18n/uiText'
 import type { ComposerSubmitPayload, ReasoningEffort, ThreadScrollState, UiTurnFileChanges, UiWorkspaceDiffMode } from './types/codex'
@@ -376,6 +429,36 @@ const {
   startPolling,
   stopPolling,
 } = useDesktopState()
+const {
+  accountStatus,
+  currentAccount,
+  authMode,
+  requiresOpenaiAuth,
+  rateLimitSnapshot: accountRateLimitSnapshot,
+  availableLoginMethods,
+  opensAuthOnHostBrowser,
+  accountCenterOpen,
+  accountCenterView,
+  loginFlow,
+  pendingAuthUrl,
+  apiKeyDraft,
+  error: accountCenterError,
+  isBootstrapping: isAccountCenterBootstrapping,
+  isSubmitting: isAccountCenterSubmitting,
+  openAccountCenter,
+  closeAccountCenter,
+  showAccountOverview,
+  showLoginMethods,
+  showApiKeyForm,
+  beginChatgptLogin,
+  submitApiKeyLogin,
+  cancelPendingLogin,
+  openPendingAuthPage,
+  performLogout,
+  refreshAccountCenter,
+  startAccountCenterState,
+  stopAccountCenterState,
+} = useAccountCenterState()
 
 const route = useRoute()
 const router = useRouter()
@@ -455,6 +538,25 @@ const languageToggleLabel = computed(() =>
 const languageToggleMark = computed(() =>
   uiLanguage.value === 'zh' ? '中' : 'EN',
 )
+const isAccountCenterBusy = computed(() =>
+  isAccountCenterBootstrapping.value || isAccountCenterSubmitting.value,
+)
+const accountCenterButtonLabel = computed(() => {
+  if (currentAccount.value?.email) {
+    return `${t('app.accountCenter')} · ${currentAccount.value.email}`
+  }
+  if (authMode.value === 'apiKey') {
+    return `${t('app.accountCenter')} · ${t('app.accountCenterModeApiKey')}`
+  }
+  return t('app.accountCenter')
+})
+const sidebarAccountSummary = computed(() => {
+  if (currentAccount.value?.email) return currentAccount.value.email
+  if (accountStatus.value === 'logged_in') return t('app.accountCenterStatusLoggedIn')
+  if (accountStatus.value === 'reauth_required') return t('app.accountCenterStatusReauthRequired')
+  if (accountStatus.value === 'error') return t('app.accountCenterStatusError')
+  return t('app.accountCenterStatusLoggedOut')
+})
 function normalizeActivityText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/gu, ' ')
 }
@@ -553,12 +655,14 @@ onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown)
   applyThemeMode(uiTheme.value)
   setupSystemThemeSync()
+  startAccountCenterState()
   void initialize()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeyDown)
   cleanupSystemThemeSync()
+  stopAccountCenterState()
   stopPolling()
 })
 
@@ -642,6 +746,58 @@ function onDismissPersistedServerRequest(requestId: number): void {
 
 function onToggleAutoRefreshTimer(): void {
   toggleAutoRefreshTimer()
+}
+
+function onOpenAccountCenter(): void {
+  openAccountCenter()
+}
+
+function onCloseAccountCenter(): void {
+  closeAccountCenter()
+}
+
+function onShowAccountOverview(): void {
+  showAccountOverview()
+}
+
+function onShowAccountLoginMethods(): void {
+  showLoginMethods()
+}
+
+function onShowApiKeyForm(): void {
+  showApiKeyForm()
+}
+
+function onUpdateAccountApiKey(value: string): void {
+  apiKeyDraft.value = value
+}
+
+function onStartChatgptLogin(): void {
+  void beginChatgptLogin()
+}
+
+function onSubmitAccountApiKey(): void {
+  void submitApiKeyLogin()
+}
+
+function onCancelAccountLogin(): void {
+  void cancelPendingLogin()
+}
+
+function onReopenAccountAuth(): void {
+  void openPendingAuthPage()
+}
+
+function onRefreshAccountCenter(): void {
+  void refreshAccountCenter({ refreshToken: true })
+}
+
+function onLogoutAccount(): void {
+  if (typeof window !== 'undefined') {
+    const confirmed = window.confirm(t('app.accountCenterLogoutConfirm'))
+    if (!confirmed) return
+  }
+  void performLogout()
 }
 
 function cycleThemeMode(): void {
@@ -1193,6 +1349,37 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
   @apply mt-auto px-2 pb-1 pt-2 flex items-center justify-start gap-1;
 }
 
+.sidebar-account-button {
+  @apply mr-auto min-w-0 h-9 rounded-xl border px-2.5 inline-flex items-center gap-2 transition;
+  border-color: color-mix(in srgb, var(--color-border-default) 86%, white);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-bg-surface) 96%, white), color-mix(in srgb, var(--color-bg-muted) 90%, white));
+  color: var(--color-text-primary);
+}
+
+.sidebar-account-button:hover {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-bg-surface) 94%, white), color-mix(in srgb, var(--color-bg-muted-hover) 88%, white));
+}
+
+.sidebar-account-button-icon {
+  @apply h-4 w-4 shrink-0;
+  color: var(--color-text-secondary);
+}
+
+.sidebar-account-button-copy {
+  @apply min-w-0 flex flex-col items-start text-left;
+}
+
+.sidebar-account-button-title {
+  @apply text-[11px] font-semibold leading-4;
+}
+
+.sidebar-account-button-meta {
+  @apply max-w-32 truncate text-[10px] leading-4;
+  color: var(--color-text-muted);
+}
+
 .sidebar-footer-button {
   @apply h-7 w-7 rounded-md border border-transparent bg-transparent flex items-center justify-center transition;
   color: var(--color-text-secondary);
@@ -1217,6 +1404,27 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 
 .content-header-diff-chip {
   @apply h-8 rounded-full border border-zinc-300 bg-white px-2.5 text-xs font-medium text-zinc-700 inline-flex items-center gap-1.5 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.content-header-account-button {
+  display: none;
+  @apply h-8 w-8 rounded-full border items-center justify-center transition;
+  border-color: color-mix(in srgb, var(--color-border-default) 84%, white);
+  background: color-mix(in srgb, var(--color-bg-surface) 92%, white);
+  color: var(--color-text-secondary);
+}
+
+.content-header-account-button:hover {
+  background: color-mix(in srgb, var(--color-bg-muted) 90%, white);
+  color: var(--color-text-primary);
+}
+
+.content-header-account-button.is-collapsed {
+  @apply inline-flex;
+}
+
+.content-header-account-icon {
+  @apply h-4 w-4;
 }
 
 .content-header-diff-icon {
@@ -1372,6 +1580,14 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 @media (max-width: 720px) {
+  .sidebar-account-button {
+    display: none;
+  }
+
+  .content-header-account-button.mobile-account-button {
+    @apply inline-flex;
+  }
+
   .new-thread-empty {
     @apply px-4;
   }
