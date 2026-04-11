@@ -68,6 +68,10 @@ codex-web-local \
   --port 3443 \
   --https-cert ./certs/dev.pem \
   --https-key ./certs/dev-key.pem
+
+# Enable direct mobile ChatGPT auth
+PUBLIC_BASE_URL=https://codex.landycode.online \
+codex-web-local --host 0.0.0.0 --port 3000
 ```
 
 ### Dev Commands (Vite)
@@ -81,11 +85,25 @@ npm run dev -- --host "$(tailscale ip -4)"
 
 # Dev mode in daemon (background)
 npm run dev -- --host 0.0.0.0 --daemon
+
+# Dev mode + direct mobile ChatGPT auth
+PUBLIC_BASE_URL=https://codex.landycode.online \
+npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
 When started with password protection (default), the server prints the password to the console. Open the URL in your browser, enter the password, and you're in.
 
 That web access password only protects the `codex-web-local` site itself. It is separate from the OpenAI / Codex account shown inside the UI's Account Center.
+
+## Direct Mobile ChatGPT Auth
+
+- When `PUBLIC_BASE_URL` is set, Account Center prefers a direct mobile-auth flow that completes in the current phone browser.
+- `PUBLIC_BASE_URL` must be a phone-accessible absolute `https://` URL. Trailing slashes are normalized automatically.
+- Supported entry points:
+  - a stable public domain like `https://codex.example.com`
+  - a temporary tunnel URL like `https://abc123.trycloudflare.com`
+- If `PUBLIC_BASE_URL` is missing, invalid, or the public entry point is unavailable, Account Center automatically falls back to opening the auth flow in the host machine browser.
+- If the tunnel / public URL changes during login, the in-flight mobile login session expires and must be restarted.
 
 ## UI Highlights
 

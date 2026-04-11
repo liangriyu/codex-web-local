@@ -11,6 +11,8 @@ test('codex gateway exposes account center rpc helpers', async () => {
 
   assert.match(gateway, /export async function getAccountStatus\(/)
   assert.match(gateway, /export async function startAccountLogin\(/)
+  assert.match(gateway, /export async function startMobileChatgptLogin\(/)
+  assert.match(gateway, /export async function getMobileChatgptLoginStatus\(/)
   assert.match(gateway, /export async function cancelAccountLogin\(/)
   assert.match(gateway, /export async function logoutAccount\(/)
   assert.match(gateway, /export async function refreshAccountStatus\(/)
@@ -21,6 +23,8 @@ test('codex gateway exposes account center rpc helpers', async () => {
   assert.match(gateway, /callRpc<[^>]+>\('account\/login\/cancel'/)
   assert.match(gateway, /callRpc\('account\/logout'/)
   assert.match(gateway, /callRpc<[^>]+>\('web-local\/browser\/open'/)
+  assert.match(gateway, /\/api\/auth\/chatgpt\/mobile\/start/)
+  assert.match(gateway, /\/api\/auth\/chatgpt\/mobile\/status/)
 })
 
 test('account center state consumes account notifications', async () => {
@@ -32,6 +36,11 @@ test('account center state consumes account notifications', async () => {
   assert.match(state, /export function useAccountCenterState\(/)
   assert.match(state, /isLoopbackUrl\(/)
   assert.match(state, /openPendingAuthPageOnHost\(/)
+  assert.match(state, /mobileDirectAuthAvailable/)
+  assert.match(state, /startMobileChatgptLogin\(/)
+  assert.match(state, /getMobileChatgptLoginStatus\(/)
+  assert.match(state, /public_url_changed|server_restarted|expired/)
+  assert.match(state, /setTimeout|clearTimeout/)
   assert.match(state, /localhost|127\.0\.0\.1/)
 })
 

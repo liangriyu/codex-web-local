@@ -34,6 +34,14 @@ import {
   TranscriptionServiceError,
   type VoiceInputFallbackConfig,
 } from './transcriptionService.js'
+import {
+  buildMobileAuthRelayUrl,
+  MobileAuthSessionStore,
+  normalizePublicBaseUrl,
+  rewriteAuthUrlForMobileCallback,
+  type MobileAuthSessionStatus,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './mobileAuthSessionStore.js'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -106,11 +114,26 @@ const SHARED_SESSION_RPC_TRIGGER_METHODS = new Set([
 const PRIVATE_VOICE_INPUT_CAPABILITY_METHOD = 'web-local/voice-input/capability/read'
 const PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD = 'web-local/voice-input/transcription/create'
 const PRIVATE_BROWSER_OPEN_METHOD = 'web-local/browser/open'
+const WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY = 'codex_web_local_mobile_direct_auth_available'
+const WEB_LOCAL_PUBLIC_BASE_URL_KEY = 'codex_web_local_public_base_url'
 const PRIVATE_RPC_METHODS = [
   PRIVATE_VOICE_INPUT_CAPABILITY_METHOD,
   PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
   PRIVATE_BROWSER_OPEN_METHOD,
 ]
+
+type MobileChatgptLoginStartResult = {
+  loginSessionId: string
+  authUrl: string
+  expiresAt: string
+}
+
+type MobileChatgptLoginStatusResult = {
+  loginSessionId: string
+  status: MobileAuthSessionStatus
+  expiresAt: string | null
+  error: string | null
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -178,6 +201,12 @@ function setJson(res: ServerResponse, statusCode: number, payload: unknown): voi
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(payload))
+}
+
+function setHtml(res: ServerResponse, statusCode: number, html: string): void {
+  res.statusCode = statusCode
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.end(html)
 }
 
 class PrivateRpcError extends Error {
@@ -1286,9 +1315,205 @@ class AppServerProcess {
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   }
+  private publicBaseUrl: string | null = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL)
+  private readonly mobileAuthSessionStore = new MobileAuthSessionStore()
 
   setVoiceInputFallbackConfig(config: VoiceInputFallbackConfig): void {
     this.voiceInputFallbackConfig = config
+  }
+
+  setPublicBaseUrl(value: string | null | undefined): void {
+    this.publicBaseUrl = normalizePublicBaseUrl(value)
+  }
+
+  getPublicBaseUrl(): string | null {
+    return this.publicBaseUrl
+  }
+
+  withWebLocalConfigSnapshot(payload: unknown): unknown {
+    const record = asRecord(payload)
+    const config = asRecord(record?.config)
+    if (!record || !config) {
+      return payload
+    }
+
+    return {
+      ...record,
+      config: {
+        ...config,
+        [WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY]: Boolean(this.publicBaseUrl),
+        [WEB_LOCAL_PUBLIC_BASE_URL_KEY]: this.publicBaseUrl,
+      },
+    }
+  }
+
+  async startMobileChatgptLogin(): Promise<MobileChatgptLoginStartResult> {
+    const publicBaseUrl = this.getPublicBaseUrl()
+    if (!publicBaseUrl) {
+      throw new Error('Mobile direct auth is unavailable because PUBLIC_BASE_URL is not configured')
+    }
+
+    const payload = asRecord(await this.rpc('account/login/start', { type: 'chatgpt' }))
+    if (payload?.type !== 'chatgpt') {
+      throw new Error('account/login/start did not return a ChatGPT login flow')
+    }
+
+    const authUrl = readText(payload.authUrl)
+    const appServerLoginId = readText(payload.loginId)
+    if (!authUrl || !appServerLoginId) {
+      throw new Error('account/login/start returned an incomplete ChatGPT login response')
+    }
+
+    const rewritten = rewriteAuthUrlForMobileCallback(authUrl, publicBaseUrl)
+    const session = this.mobileAuthSessionStore.create({
+      appServerLoginId,
+      state: rewritten.state,
+      originalCallbackUrl: rewritten.originalCallbackUrl,
+      publicBaseUrlSnapshot: publicBaseUrl,
+    })
+
+    return {
+      loginSessionId: session.loginSessionId,
+      authUrl: rewritten.authUrl,
+      expiresAt: session.expiresAt,
+    }
+  }
+
+  getMobileChatgptLoginStatus(loginSessionId: string): MobileChatgptLoginStatusResult {
+    const normalizedLoginSessionId = loginSessionId.trim()
+    if (!normalizedLoginSessionId) {
+      throw new Error('Missing login session id')
+    }
+
+    const status = this.mobileAuthSessionStore.readStatus(normalizedLoginSessionId, this.getPublicBaseUrl())
+    if (!status) {
+      return {
+        loginSessionId: normalizedLoginSessionId,
+        status: 'server_restarted',
+        expiresAt: null,
+        error: null,
+      }
+    }
+
+    return status
+  }
+
+  async completeMobileChatgptCallback(callbackUrl: URL): Promise<{
+    ok: boolean
+    status: MobileAuthSessionStatus
+    message: string
+  }> {
+    const state = readText(callbackUrl.searchParams.get('state'))
+    if (!state) {
+      return {
+        ok: false,
+        status: 'failed',
+        message: 'ChatGPT callback is missing state',
+      }
+    }
+
+    const session = this.mobileAuthSessionStore.readByState(state)
+    if (!session) {
+      return {
+        ok: false,
+        status: 'server_restarted',
+        message: 'This login session is no longer available. Please restart the login flow.',
+      }
+    }
+
+    const status = this.mobileAuthSessionStore.readStatus(session.loginSessionId, this.getPublicBaseUrl())
+    if (!status) {
+      return {
+        ok: false,
+        status: 'server_restarted',
+        message: 'This login session is no longer available. Please restart the login flow.',
+      }
+    }
+    if (status.status === 'expired') {
+      return {
+        ok: false,
+        status: 'expired',
+        message: 'This login session has expired. Please restart the login flow.',
+      }
+    }
+    if (status.status === 'public_url_changed') {
+      return {
+        ok: false,
+        status: 'public_url_changed',
+        message: 'Public access URL changed during login. Please restart the login flow.',
+      }
+    }
+    if (status.status === 'success') {
+      return {
+        ok: true,
+        status: 'success',
+        message: 'ChatGPT login already completed. You can return to the account center.',
+      }
+    }
+    if (status.status === 'failed') {
+      return {
+        ok: false,
+        status: 'failed',
+        message: status.error ?? 'ChatGPT login did not complete',
+      }
+    }
+
+    const oauthError = readText(callbackUrl.searchParams.get('error'))
+    const oauthErrorDescription = readText(callbackUrl.searchParams.get('error_description'))
+    if (oauthError) {
+      const errorMessage = oauthErrorDescription || oauthError
+      this.mobileAuthSessionStore.markFailedByState(state, errorMessage)
+      return {
+        ok: false,
+        status: 'failed',
+        message: errorMessage,
+      }
+    }
+
+    const authCode = readText(callbackUrl.searchParams.get('code'))
+    if (!authCode) {
+      const message = 'ChatGPT callback is missing code'
+      this.mobileAuthSessionStore.markFailedByState(state, message)
+      return {
+        ok: false,
+        status: 'failed',
+        message,
+      }
+    }
+
+    const relayUrl = buildMobileAuthRelayUrl(session.originalCallbackUrl, callbackUrl)
+    let relayResponse: Response
+    try {
+      relayResponse = await fetch(relayUrl, {
+        method: 'GET',
+        redirect: 'manual',
+      })
+    } catch (error) {
+      const message = getErrorMessage(error, 'Failed to relay ChatGPT callback to the local host')
+      this.mobileAuthSessionStore.markFailedByState(state, message)
+      return {
+        ok: false,
+        status: 'failed',
+        message,
+      }
+    }
+
+    if (!relayResponse.ok && relayResponse.status !== 302 && relayResponse.status !== 303) {
+      const message = `Local ChatGPT callback returned HTTP ${String(relayResponse.status)}`
+      this.mobileAuthSessionStore.markFailedByState(state, message)
+      return {
+        ok: false,
+        status: 'failed',
+        message,
+      }
+    }
+
+    this.mobileAuthSessionStore.markSuccessByState(state)
+    return {
+      ok: true,
+      status: 'success',
+      message: 'ChatGPT login completed. You can return to the account center.',
+    }
   }
 
   private getTranscriptionService() {
@@ -2418,13 +2643,16 @@ function getSharedBridgeState(): SharedBridgeState {
   return created
 }
 
-export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig } = {}): CodexBridgeMiddleware {
+export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig; publicBaseUrl?: string | null } = {}): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
   appServer.setVoiceInputFallbackConfig(options.voiceInputFallback ?? {
     provider: 'openai',
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   })
+  if (Object.prototype.hasOwnProperty.call(options, 'publicBaseUrl')) {
+    appServer.setPublicBaseUrl(options.publicBaseUrl)
+  }
 
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {
@@ -2449,7 +2677,10 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
           : undefined
 
         try {
-          const result = await appServer.rpc(body.method, params)
+          const rawResult = await appServer.rpc(body.method, params)
+          const result = body.method === 'config/read'
+            ? appServer.withWebLocalConfigSnapshot(rawResult)
+            : rawResult
           appServer.triggerSharedSessionSnapshotSync(readThreadIdFromRpcPayload(body.method, params, result))
           setJson(res, 200, { result })
           return
@@ -2466,6 +2697,41 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
         const payload = await readJsonBody(req)
         await appServer.respondToServerRequest(payload)
         setJson(res, 200, { ok: true })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/auth/chatgpt/mobile/start') {
+        const result = await appServer.startMobileChatgptLogin()
+        setJson(res, 200, result)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/auth/chatgpt/mobile/status') {
+        const loginSessionId = readText(url.searchParams.get('id'))
+        if (!loginSessionId) {
+          setJson(res, 400, { error: 'Missing query parameter: id' })
+          return
+        }
+        setJson(res, 200, appServer.getMobileChatgptLoginStatus(loginSessionId))
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/auth/chatgpt/callback') {
+        const result = await appServer.completeMobileChatgptCallback(url)
+        setHtml(
+          res,
+          result.ok ? 200 : 400,
+          [
+            '<!doctype html>',
+            '<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+            `<title>${result.ok ? 'ChatGPT login completed' : 'ChatGPT login failed'}</title>`,
+            '</head><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:24px;line-height:1.6;">',
+            `<h1>${result.ok ? 'ChatGPT login completed' : 'ChatGPT login failed'}</h1>`,
+            `<p>${result.message}</p>`,
+            '<p>You can return to the Codex account center now.</p>',
+            '</body></html>',
+          ].join(''),
+        )
         return
       }
 

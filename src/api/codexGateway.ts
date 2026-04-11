@@ -43,6 +43,8 @@ import type {
   UiAccountAuthMode,
   UiAccountLoginRequest,
   UiAccountLoginStartResult,
+  UiMobileChatgptLoginStartResult,
+  UiMobileChatgptLoginStatusResult,
   UiAccountSnapshot,
   UiCodexConfigSnapshot,
   UiForcedLoginMethod,
@@ -124,6 +126,22 @@ type FetchJsonOptions = {
   body?: unknown
   signal?: AbortSignal
 }
+
+type MobileChatgptLoginStartResponse = {
+  loginSessionId?: unknown
+  authUrl?: unknown
+  expiresAt?: unknown
+}
+
+type MobileChatgptLoginStatusResponse = {
+  loginSessionId?: unknown
+  status?: unknown
+  expiresAt?: unknown
+  error?: unknown
+}
+
+const WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY = 'codex_web_local_mobile_direct_auth_available'
+const WEB_LOCAL_PUBLIC_BASE_URL_KEY = 'codex_web_local_public_base_url'
 
 const EMPTY_WORKSPACE_DIRTY_SUMMARY: UiWorkspaceDirtySummary = {
   trackedModified: 0,
@@ -1113,8 +1131,14 @@ export async function readCodexConfig(): Promise<UiCodexConfigSnapshot> {
   const payload = await callRpc<ConfigReadResponse>('config/read', {
     includeLayers: false,
   })
+  const configRecord = payload.config as Record<string, unknown>
   return {
     forcedLoginMethod: normalizeForcedLoginMethod(payload.config.forced_login_method),
+    mobileDirectAuthAvailable: configRecord[WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY] === true,
+    publicBaseUrl: typeof configRecord[WEB_LOCAL_PUBLIC_BASE_URL_KEY] === 'string'
+      && configRecord[WEB_LOCAL_PUBLIC_BASE_URL_KEY].trim().length > 0
+      ? configRecord[WEB_LOCAL_PUBLIC_BASE_URL_KEY].trim()
+      : null,
   }
 }
 
@@ -1171,6 +1195,54 @@ export async function openUrlInHostBrowser(url: string): Promise<boolean> {
     url: normalizedUrl,
   })
   return payload.opened === true
+}
+
+export async function startMobileChatgptLogin(): Promise<UiMobileChatgptLoginStartResult> {
+  const payload = await fetchJson<MobileChatgptLoginStartResponse>(
+    '/api/auth/chatgpt/mobile/start',
+    'Failed to start mobile ChatGPT login',
+    'POST /api/auth/chatgpt/mobile/start',
+    {
+      method: 'POST',
+      body: {},
+    },
+  )
+
+  if (
+    typeof payload.loginSessionId !== 'string'
+    || typeof payload.authUrl !== 'string'
+    || typeof payload.expiresAt !== 'string'
+  ) {
+    throw new Error('Mobile ChatGPT login start returned an invalid payload')
+  }
+
+  return {
+    loginSessionId: payload.loginSessionId,
+    authUrl: payload.authUrl,
+    expiresAt: payload.expiresAt,
+  }
+}
+
+export async function getMobileChatgptLoginStatus(loginSessionId: string): Promise<UiMobileChatgptLoginStatusResult> {
+  const normalizedLoginSessionId = loginSessionId.trim()
+  if (!normalizedLoginSessionId) {
+    throw new Error('Mobile login session id is required')
+  }
+
+  const payload = await fetchJson<MobileChatgptLoginStatusResponse>(
+    `/api/auth/chatgpt/mobile/status?id=${encodeURIComponent(normalizedLoginSessionId)}`,
+    'Failed to read mobile ChatGPT login status',
+    'GET /api/auth/chatgpt/mobile/status',
+  )
+
+  return {
+    loginSessionId: typeof payload.loginSessionId === 'string' ? payload.loginSessionId : normalizedLoginSessionId,
+    status: typeof payload.status === 'string'
+      ? payload.status as UiMobileChatgptLoginStatusResult['status']
+      : 'server_restarted',
+    expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : null,
+    error: typeof payload.error === 'string' && payload.error.trim().length > 0 ? payload.error.trim() : null,
+  }
 }
 
 function normalizeUsedPercent(value: unknown): number | null {

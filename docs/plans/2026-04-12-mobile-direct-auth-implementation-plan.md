@@ -285,4 +285,17 @@ Expected: PASS，且文档中的配置名与代码实现一致。
 ## 验证命令
 
 - `node --test tests/accountCenterUi.test.mjs tests/mobileDirectAuthServer.test.mjs`
+- `node --test tests/cliVoiceInputConfig.test.mjs`
 - `npm run build`
+
+## 本次实现结果（2026-04-12）
+
+- 已完成：
+  - `PUBLIC_BASE_URL` 读取、校验与配置透出
+  - 移动端登录会话内存态与状态查询
+  - `/api/auth/chatgpt/mobile/start`
+  - `/api/auth/chatgpt/mobile/status`
+  - `/auth/chatgpt/callback`
+  - 账号中心按能力自动选择手机端直登或现有登录流
+  - 运行文档同步
+- 当前实现采用“公网回调 -> `codex-web-local` -> relay 回原始 loopback callback”的最小链路，不修改 `documentation/app-server-schemas`。

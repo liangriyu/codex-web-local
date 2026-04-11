@@ -233,16 +233,25 @@ function debugFileChangesState(action: string, payload: Record<string, unknown>)
   console.debug(`[file-changes-state] ${action}`, payload)
 }
 
-function isNoRolloutError(error: unknown): error is CodexApiError {
+function isNoRolloutError(error: unknown): boolean {
   if (!(error instanceof CodexApiError)) return false
   if (error.status !== 502) return false
   return error.message.toLowerCase().includes('no rollout found for thread id')
 }
 
-function isResumeNoRolloutError(error: unknown): error is CodexApiError {
+function isResumeRetryableError(error: unknown): error is CodexApiError {
   if (!(error instanceof CodexApiError)) return false
   if (error.method !== 'thread/resume') return false
-  return isNoRolloutError(error)
+
+  if (isNoRolloutError(error)) {
+    return true
+  }
+
+  if (error.code === 'network_error') {
+    return true
+  }
+
+  return typeof error.status === 'number' && error.status >= 500
 }
 
 export function useDesktopState() {
@@ -511,7 +520,7 @@ export function useDesktopState() {
       {
         attempts: RESUME_RETRY_ATTEMPTS,
         baseDelayMs: RESUME_RETRY_BASE_DELAY_MS,
-        shouldRetry: isResumeNoRolloutError,
+        shouldRetry: isResumeRetryableError,
       },
     )
   }
@@ -1887,6 +1896,10 @@ export function useDesktopState() {
     const turnActivity = readTurnActivity(notification)
     if (turnActivity) {
       setTurnActivityForThread(turnActivity.threadId, turnActivity.activity)
+    }
+
+    if (notification.method === 'turn/started' || notification.method === 'turn/completed') {
+      void refreshSharedSessionSnapshots({ silent: true })
     }
 
     const startedTurn = readTurnStartedInfo(notification)

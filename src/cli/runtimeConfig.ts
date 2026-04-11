@@ -21,6 +21,7 @@ export type NormalizedCliRuntimeConfig = {
   host?: string
   daemon: boolean
   password: string | boolean
+  publicBaseUrl?: string
   https?: {
     cert: string
     key: string
@@ -66,6 +67,31 @@ function normalizeVoiceInputFallbackConfig(env: NodeJS.ProcessEnv): VoiceInputFa
   }
 }
 
+function normalizePublicBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
+  const rawValue = env.PUBLIC_BASE_URL?.trim() ?? ''
+  if (!rawValue) return undefined
+
+  let parsed: URL
+  try {
+    parsed = new URL(rawValue)
+  } catch {
+    throw new Error('PUBLIC_BASE_URL must be an absolute URL')
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('PUBLIC_BASE_URL must use https')
+  }
+
+  parsed.hash = ''
+  if (parsed.pathname.length > 1) {
+    parsed.pathname = parsed.pathname.replace(/\/+$/u, '')
+  } else {
+    parsed.pathname = ''
+  }
+
+  return parsed.toString().replace(/\/$/u, '')
+}
+
 export function normalizeCliRuntimeConfig(
   raw: RawCliRuntimeOptions,
   env: NodeJS.ProcessEnv = process.env,
@@ -85,6 +111,7 @@ export function normalizeCliRuntimeConfig(
     host: raw.host?.trim() || undefined,
     daemon: raw.daemon === true,
     password: raw.password,
+    publicBaseUrl: normalizePublicBaseUrl(env),
     https: httpsCert && httpsKey
       ? {
           cert: httpsCert,

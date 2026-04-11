@@ -30,7 +30,7 @@ test('normalizeCliRuntimeConfig returns https configuration when fully specified
     password: false,
     httpsCert: '/tmp/dev.pem',
     httpsKey: '/tmp/dev.key',
-  })
+  }, {})
 
   assert.equal(config.port, 3443)
   assert.equal(config.host, '192.168.1.2')
@@ -107,4 +107,27 @@ test('normalizeCliRuntimeConfig supports zhipu voice fallback provider selection
   assert.equal(enabled.voiceInputFallback.provider, 'zhipu')
   assert.equal(enabled.voiceInputFallback.apiKey, 'zhipu-test')
   assert.equal(enabled.voiceInputFallback.model, 'glm-asr-2512')
+})
+
+test('normalizeCliRuntimeConfig accepts a normalized https PUBLIC_BASE_URL', () => {
+  const config = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    PUBLIC_BASE_URL: 'https://codex.landycode.online/',
+  })
+
+  assert.equal(config.publicBaseUrl, 'https://codex.landycode.online')
+})
+
+test('normalizeCliRuntimeConfig rejects non-https PUBLIC_BASE_URL', () => {
+  assert.throws(
+    () => normalizeCliRuntimeConfig({
+      port: '3000',
+      password: false,
+    }, {
+      PUBLIC_BASE_URL: 'http://codex.landycode.online',
+    }),
+    /PUBLIC_BASE_URL must use https/i,
+  )
 })

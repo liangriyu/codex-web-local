@@ -347,6 +347,7 @@ import type { ComposerSubmitPayload, ReasoningEffort, ThreadScrollState, UiTurnF
 import { fetchFilePreview } from './api/codexGateway'
 import { buildApprovalRequestDisplayModel, isApprovalRequestMethod } from './utils/approvalRequestDisplay'
 import { shouldShowThinkingIndicator } from './utils/thinkingIndicatorState'
+import { resolveThreadExecutionInProgress } from './utils/threadExecutionState'
 import {
   normalizePathSeparators,
   getBasename,
@@ -623,7 +624,14 @@ const filteredMessages = computed(() =>
   }),
 )
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
-const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
+const isSelectedThreadInProgress = computed(() =>
+  resolveThreadExecutionInProgress({
+    isHomeRoute: isHomeRoute.value,
+    threadInProgress: selectedThread.value?.inProgress === true,
+    sharedSessionState: selectedSharedSessionSnapshot.value?.state ?? null,
+    sharedSessionTurnStatus: selectedSharedSessionSnapshot.value?.latestTurnSummary?.status ?? null,
+  }),
+)
 const canOpenWorkspaceDiff = computed(() => {
   if (isHomeRoute.value) return false
   const cwd = selectedThread.value?.cwd?.trim() ?? ''

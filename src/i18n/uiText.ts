@@ -293,8 +293,8 @@ const UI_TEXT = {
     en: 'Continue with ChatGPT',
   },
   'app.accountCenterLoginWithChatgptHint': {
-    zh: '打开授权页完成登录，完成后会自动刷新当前状态。',
-    en: 'Open the authorization page and refresh automatically when done.',
+    zh: '会按当前服务能力自动选择手机端直登或宿主机浏览器授权，完成后会自动刷新当前状态。',
+    en: 'Automatically chooses direct mobile auth or host-browser auth based on runtime capability, then refreshes when done.',
   },
   'app.accountCenterLoginWithApiKey': {
     zh: '使用 API Key 登录',
@@ -333,8 +333,8 @@ const UI_TEXT = {
     en: 'Waiting for authorization',
   },
   'app.accountCenterOAuthWaitingHint': {
-    zh: '授权完成后这里会自动刷新。你也可以取消本次登录并重新选择方式。',
-    en: 'This view refreshes automatically when authorization finishes. You can also cancel and choose again.',
+    zh: '请在当前浏览器完成授权。完成后这里会自动刷新；你也可以取消本次登录并重新选择方式。',
+    en: 'Finish authorization in the current browser. This view refreshes automatically when it completes, or you can cancel and choose again.',
   },
   'app.accountCenterOAuthWaitingHostHint': {
     zh: '这个授权页会在运行 codex-web-local 的宿主机浏览器中打开，因为回调地址是本机 localhost。完成后这里会自动刷新。',

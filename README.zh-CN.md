@@ -68,6 +68,10 @@ codex-web-local \
   --port 3443 \
   --https-cert ./certs/dev.pem \
   --https-key ./certs/dev-key.pem
+
+# 启用手机端独立 ChatGPT 授权
+PUBLIC_BASE_URL=https://codex.landycode.online \
+codex-web-local --host 0.0.0.0 --port 3000
 ```
 
 ### 开发命令（Vite）
@@ -81,11 +85,25 @@ npm run dev -- --host "$(tailscale ip -4)"
 
 # 开发模式后台运行
 npm run dev -- --host 0.0.0.0 --daemon
+
+# 开发模式 + 手机端独立 ChatGPT 授权
+PUBLIC_BASE_URL=https://codex.landycode.online \
+npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
 默认开启密码保护时，服务会在控制台打印密码。浏览器打开 URL 后输入密码即可访问。
 
 这里的 Web 访问密码只负责保护 `codex-web-local` 站点入口；界面里的“账号中心”管理的是底层 OpenAI / Codex 账号，两者是两套独立鉴权。
+
+## 手机端 ChatGPT 直登
+
+- 设置 `PUBLIC_BASE_URL` 后，账号中心会优先走“当前手机浏览器内完成授权”的直登链路。
+- `PUBLIC_BASE_URL` 必须是手机可访问的绝对 `https://` 地址，末尾斜杠会自动归一化。
+- 适用入口：
+  - 固定正式域名，如 `https://codex.example.com`
+  - tunnel 临时域名，如 `https://abc123.trycloudflare.com`
+- 若未设置 `PUBLIC_BASE_URL`、地址非法，或公网入口暂不可用，账号中心会自动回退到宿主机浏览器授权模式。
+- 若 tunnel / 外网域名在登录过程中变化，进行中的手机端登录会失效，需要重新发起。
 
 ## 界面与交互更新
 

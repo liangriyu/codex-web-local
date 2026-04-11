@@ -13,3 +13,4 @@ PROJECT_SPEC.md
 .codex/
 .playwright/
 .playwright-cli/
+.env.local

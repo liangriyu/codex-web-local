@@ -36,6 +36,9 @@
 - `PUBLIC_BASE_URL` 作为运行时能力开关，不存在或非法时自动回退宿主机授权模式。
 - 移动端授权中间态只保留短期内存态，不落长期持久化。
 - 固定正式域名与 tunnel 走同一套逻辑，只通过 `PUBLIC_BASE_URL` 的当前值区分。
+- 实际回调落地方式为：
+  - 对 `account/login/start` 返回的 OAuth URL 做最小重写，把其中的 loopback callback 替换为 `${PUBLIC_BASE_URL}/auth/chatgpt/callback`
+  - 公网回调进入 `codex-web-local` 后，再由服务端把同一组查询参数 relay 回原始 loopback callback，让底层 `app-server` 完成最终登录落账
 
 ## 配置与运行方式
 
