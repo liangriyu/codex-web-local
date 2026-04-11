@@ -7,6 +7,7 @@ test('normalizeCliRuntimeConfig rejects partial https configuration', () => {
   assert.throws(
     () => normalizeCliRuntimeConfig({
       port: '3000',
+      password: false,
       httpsCert: '/tmp/dev.pem',
     }),
     /https key/i,
@@ -15,36 +16,95 @@ test('normalizeCliRuntimeConfig rejects partial https configuration', () => {
   assert.throws(
     () => normalizeCliRuntimeConfig({
       port: '3000',
+      password: false,
       httpsKey: '/tmp/dev.key',
     }),
     /https cert/i,
   )
 })
 
-test('normalizeCliRuntimeConfig returns https and stt configuration when fully specified', () => {
+test('normalizeCliRuntimeConfig returns https configuration when fully specified', () => {
   const config = normalizeCliRuntimeConfig({
     port: '3443',
     host: '192.168.1.2',
     password: false,
     httpsCert: '/tmp/dev.pem',
     httpsKey: '/tmp/dev.key',
-    sttCommand: '/usr/local/bin/whisper-cli',
-    sttModel: '/models/ggml-base.bin',
-    sttLanguage: 'zh',
-    sttTimeoutMs: '45000',
   })
 
   assert.equal(config.port, 3443)
   assert.equal(config.host, '192.168.1.2')
   assert.equal(config.https?.cert, '/tmp/dev.pem')
   assert.equal(config.https?.key, '/tmp/dev.key')
-  assert.equal(config.transcription?.command, '/usr/local/bin/whisper-cli')
-  assert.equal(config.transcription?.model, '/models/ggml-base.bin')
-  assert.equal(config.transcription?.language, 'zh')
-  assert.equal(config.transcription?.timeoutMs, 45000)
+  assert.equal(config.voiceInputFallback.enabled, false)
 })
 
 test('formatAccessUrl uses https scheme when tls is enabled', () => {
   assert.equal(formatAccessUrl('192.168.1.2', 3443, true), 'https://192.168.1.2:3443')
   assert.equal(formatAccessUrl(undefined, 3000, false), 'http://localhost:3000')
+})
+
+test('normalizeCliRuntimeConfig enables openai voice fallback only when flag and key are both present', () => {
+  const disabledByMissingFlag = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    OPENAI_API_KEY: 'sk-test',
+  })
+  assert.equal(disabledByMissingFlag.voiceInputFallback.enabled, false)
+
+  const disabledByMissingKey = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED: '1',
+  })
+  assert.equal(disabledByMissingKey.voiceInputFallback.enabled, false)
+
+  const enabled = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    OPENAI_API_KEY: 'sk-test',
+    CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED: '1',
+  })
+  assert.equal(enabled.voiceInputFallback.enabled, true)
+  assert.equal(enabled.voiceInputFallback.apiKey, 'sk-test')
+  assert.equal(enabled.voiceInputFallback.provider, 'openai')
+  assert.equal(enabled.voiceInputFallback.model, 'gpt-4o-mini-transcribe')
+})
+
+test('normalizeCliRuntimeConfig supports zhipu voice fallback provider selection', () => {
+  const disabledByMissingFlag = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER: 'zhipu',
+    ZHIPU_API_KEY: 'zhipu-test',
+  })
+  assert.equal(disabledByMissingFlag.voiceInputFallback.enabled, false)
+  assert.equal(disabledByMissingFlag.voiceInputFallback.provider, 'zhipu')
+
+  const disabledByMissingKey = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER: 'zhipu',
+    CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED: '1',
+  })
+  assert.equal(disabledByMissingKey.voiceInputFallback.enabled, false)
+  assert.equal(disabledByMissingKey.voiceInputFallback.provider, 'zhipu')
+
+  const enabled = normalizeCliRuntimeConfig({
+    port: '3000',
+    password: false,
+  }, {
+    CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER: 'zhipu',
+    CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED: '1',
+    ZHIPU_API_KEY: 'zhipu-test',
+  })
+  assert.equal(enabled.voiceInputFallback.enabled, true)
+  assert.equal(enabled.voiceInputFallback.provider, 'zhipu')
+  assert.equal(enabled.voiceInputFallback.apiKey, 'zhipu-test')
+  assert.equal(enabled.voiceInputFallback.model, 'glm-asr-2512')
 })

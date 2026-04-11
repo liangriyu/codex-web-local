@@ -552,6 +552,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { createVoiceInputTranscription, readVoiceInputCapability } from '../../api/voiceInputRpc'
 import type {
   ChatMode,
   ComposerSubmitPayload,
@@ -577,9 +578,8 @@ import IconTablerPaperclip from '../icons/IconTablerPaperclip.vue'
 import IconTablerTerminal2 from '../icons/IconTablerTerminal2.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
 import { getModelReasoningSupport } from '../../api/codexGateway'
-import { requestLocalTranscription } from '../../api/transcriptionGateway'
 import ComposerDropdown from './ComposerDropdown.vue'
-import { detectVoiceInputSupport } from '../../utils/voiceInput'
+import { detectVoiceInputSupport, resolveVoiceInputSupport } from '../../utils/voiceInput'
 
 const props = defineProps<{
   activeThreadId: string
@@ -610,8 +610,8 @@ type ComposerImageInput = {
 
 type VoiceInputState = 'idle' | 'listening-native' | 'recording-fallback' | 'transcribing-fallback' | 'failed'
 type VoiceInputErrorKey =
-  | 'composer.voiceUnsupported'
   | 'composer.voicePermissionDenied'
+  | 'composer.voiceQuotaExceeded'
   | 'composer.voiceTranscriptionFailed'
 
 type SpeechRecognitionResultLike = {
@@ -662,15 +662,20 @@ const isBranchMenuOpen = ref(false)
 const isMobileStatusPanelOpen = ref(false)
 const newBranchName = ref('')
 const pastedImages = ref<ComposerImageInput[]>([])
-const voiceInputSupport = detectVoiceInputSupport()
+const browserVoiceInputSupport = detectVoiceInputSupport()
+const voiceInputSupport = ref(resolveVoiceInputSupport({
+  hasNativeRecognition: browserVoiceInputSupport.hasNativeRecognition,
+  fallbackEnabled: false,
+}))
 const voiceInputState = ref<VoiceInputState>('idle')
 const voiceInputErrorKey = ref<VoiceInputErrorKey | null>(null)
 const activeSpeechRecognition = ref<SpeechRecognitionInstance | null>(null)
-const activeMediaRecorder = ref<MediaRecorder | null>(null)
-const activeMediaStream = ref<MediaStream | null>(null)
-const fallbackAudioChunks = ref<BlobPart[]>([])
-const fallbackAutoStopTimer = ref<number | null>(null)
-const shouldDiscardFallbackRecording = ref(false)
+const activeFallbackRecorder = ref<MediaRecorder | null>(null)
+const activeFallbackStream = ref<MediaStream | null>(null)
+const voiceCapabilityRequestController = ref<AbortController | null>(null)
+const shouldTranscribeFallbackRecording = ref(false)
+const voiceInputFallbackProvider = ref('openai')
+const voiceInputAcceptedMimeTypes = ref<string[]>([])
 const normalizedLanguage = computed<UiLanguage>(() => props.uiLanguage ?? 'zh')
 const REASONING_EFFORT_ORDER: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const reasoningOptions = computed<Array<{ value: ReasoningEffort; label: string; icon?: Component; iconProps?: Record<string, unknown> }>>(() => {
@@ -1182,12 +1187,12 @@ const canSubmit = computed(() => {
 })
 const shouldShowVoiceButton = computed(() =>
   props.activeThreadId
-  && voiceInputSupport.preferredMode !== 'unsupported',
+  && voiceInputSupport.value.preferredMode !== 'unsupported',
 )
 const isVoiceButtonDisabled = computed(() =>
   props.disabled === true
   || !props.activeThreadId
-  || voiceInputState.value === 'transcribing-fallback',
+  || voiceInputState.value === 'transcribing-fallback'
 )
 const shouldShowStopButton = computed(() =>
   props.isTurnInProgress === true && draft.value.trim().length === 0,
@@ -1259,30 +1264,195 @@ function resetVoiceInputState(): void {
   voiceInputErrorKey.value = null
 }
 
-function clearFallbackRecordingState(): void {
-  if (fallbackAutoStopTimer.value !== null) {
-    window.clearTimeout(fallbackAutoStopTimer.value)
-    fallbackAutoStopTimer.value = null
-  }
-  activeMediaRecorder.value = null
-  if (activeMediaStream.value) {
-    activeMediaStream.value.getTracks().forEach((track) => track.stop())
-  activeMediaStream.value = null
-  }
-  fallbackAudioChunks.value = []
-  shouldDiscardFallbackRecording.value = false
-}
-
 function failVoiceInput(errorKey: VoiceInputErrorKey): void {
-  clearFallbackRecordingState()
   voiceInputState.value = 'failed'
   voiceInputErrorKey.value = errorKey
+}
+
+function mapVoiceInputTranscriptionError(error: unknown): VoiceInputErrorKey {
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  if (message.includes('insufficient_quota') || message.includes('quota exceeded')) {
+    return 'composer.voiceQuotaExceeded'
+  }
+  return 'composer.voiceTranscriptionFailed'
+}
+
+function hasBrowserFallbackRecordingSupport(): boolean {
+  if (typeof window === 'undefined') return false
+  if (typeof navigator === 'undefined') return false
+  if (typeof MediaRecorder !== 'function') return false
+  return typeof navigator.mediaDevices?.getUserMedia === 'function'
+}
+
+function stopFallbackStream(): void {
+  activeFallbackStream.value?.getTracks().forEach((track) => track.stop())
+  activeFallbackStream.value = null
+}
+
+function clearFallbackRecorder(): void {
+  activeFallbackRecorder.value = null
+  shouldTranscribeFallbackRecording.value = false
+  stopFallbackStream()
+}
+
+function stopFallbackRecordingWithoutTranscription(): void {
+  shouldTranscribeFallbackRecording.value = false
+  const recorder = activeFallbackRecorder.value
+  if (!recorder || recorder.state === 'inactive') {
+    clearFallbackRecorder()
+    return
+  }
+  recorder.stop()
+}
+
+function pickFallbackRecordingMimeType(): string | undefined {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return undefined
+  }
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+  ]
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate))
+}
+
+function getAudioContextConstructor():
+  | (new (contextOptions?: AudioContextOptions) => AudioContext)
+  | null {
+  if (typeof window === 'undefined') return null
+  const candidate = window as Window & typeof globalThis & {
+    AudioContext?: new (contextOptions?: AudioContextOptions) => AudioContext
+    webkitAudioContext?: new (contextOptions?: AudioContextOptions) => AudioContext
+  }
+  return candidate.AudioContext ?? candidate.webkitAudioContext ?? null
+}
+
+function encodeWavPcm16(audioBuffer: AudioBuffer): Blob {
+  const channels = audioBuffer.numberOfChannels
+  const sampleRate = audioBuffer.sampleRate
+  const bitsPerSample = 16
+  const bytesPerSample = bitsPerSample / 8
+  const frameCount = audioBuffer.length
+  const dataSize = frameCount * channels * bytesPerSample
+  const buffer = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(buffer)
+
+  let offset = 0
+  const writeString = (value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset, value.charCodeAt(index))
+      offset += 1
+    }
+  }
+
+  writeString('RIFF')
+  view.setUint32(offset, 36 + dataSize, true)
+  offset += 4
+  writeString('WAVE')
+  writeString('fmt ')
+  view.setUint32(offset, 16, true)
+  offset += 4
+  view.setUint16(offset, 1, true)
+  offset += 2
+  view.setUint16(offset, channels, true)
+  offset += 2
+  view.setUint32(offset, sampleRate, true)
+  offset += 4
+  view.setUint32(offset, sampleRate * channels * bytesPerSample, true)
+  offset += 4
+  view.setUint16(offset, channels * bytesPerSample, true)
+  offset += 2
+  view.setUint16(offset, bitsPerSample, true)
+  offset += 2
+  writeString('data')
+  view.setUint32(offset, dataSize, true)
+  offset += 4
+
+  const channelData = Array.from({ length: channels }, (_, index) => audioBuffer.getChannelData(index))
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, channelData[channel]?.[frame] ?? 0))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+      offset += 2
+    }
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' })
+}
+
+async function convertAudioBlobToWav(blob: Blob): Promise<Blob> {
+  const AudioContextCtor = getAudioContextConstructor()
+  if (!AudioContextCtor) {
+    throw new Error('AudioContext is not available')
+  }
+
+  const arrayBuffer = await blob.arrayBuffer()
+  const audioContext = new AudioContextCtor()
+  try {
+    const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+    return encodeWavPcm16(decoded)
+  } finally {
+    await audioContext.close().catch(() => {})
+  }
+}
+
+async function convertFallbackAudioForProvider(blob: Blob): Promise<Blob> {
+  const normalizedMimeTypes = voiceInputAcceptedMimeTypes.value
+    .map((value) => value.toLowerCase())
+  const sourceMimeType = (blob.type || 'application/octet-stream').toLowerCase()
+
+  if (normalizedMimeTypes.length === 0 || normalizedMimeTypes.includes(sourceMimeType)) {
+    return blob
+  }
+  if (voiceInputFallbackProvider.value === 'zhipu' && normalizedMimeTypes.includes('audio/wav')) {
+    return convertAudioBlobToWav(blob)
+  }
+  return blob
+}
+
+async function hydrateVoiceInputSupport(): Promise<void> {
+  if (browserVoiceInputSupport.hasNativeRecognition) {
+    voiceInputFallbackProvider.value = 'openai'
+    voiceInputAcceptedMimeTypes.value = []
+    voiceInputSupport.value = resolveVoiceInputSupport({
+      hasNativeRecognition: true,
+      fallbackEnabled: false,
+    })
+    return
+  }
+
+  const controller = new AbortController()
+  voiceCapabilityRequestController.value?.abort()
+  voiceCapabilityRequestController.value = controller
+
+  try {
+    const capability = await readVoiceInputCapability(controller.signal)
+    voiceInputFallbackProvider.value = capability.provider
+    voiceInputAcceptedMimeTypes.value = capability.acceptedMimeTypes
+    voiceInputSupport.value = resolveVoiceInputSupport({
+      hasNativeRecognition: false,
+      fallbackEnabled: capability.fallbackEnabled && hasBrowserFallbackRecordingSupport(),
+    })
+  } catch {
+    voiceInputFallbackProvider.value = 'openai'
+    voiceInputAcceptedMimeTypes.value = []
+    voiceInputSupport.value = resolveVoiceInputSupport({
+      hasNativeRecognition: false,
+      fallbackEnabled: false,
+    })
+  } finally {
+    if (voiceCapabilityRequestController.value === controller) {
+      voiceCapabilityRequestController.value = null
+    }
+  }
 }
 
 function startNativeSpeechRecognition(): void {
   const Recognition = getSpeechRecognitionConstructor()
   if (!Recognition) {
-    void startFallbackRecording()
+    failVoiceInput('composer.voiceTranscriptionFailed')
     return
   }
 
@@ -1316,85 +1486,81 @@ function startNativeSpeechRecognition(): void {
   recognition.start()
 }
 
-async function transcribeFallbackAudio(audio: Blob): Promise<void> {
-  voiceInputState.value = 'transcribing-fallback'
-  try {
-    const response = await requestLocalTranscription(audio)
-    applyTranscriptToDraft(response.text ?? '')
-    resetVoiceInputState()
-  } catch {
+async function transcribeFallbackRecording(audioBlob: Blob): Promise<void> {
+  if (audioBlob.size === 0) {
     failVoiceInput('composer.voiceTranscriptionFailed')
+    return
+  }
+
+  voiceInputState.value = 'transcribing-fallback'
+  voiceInputErrorKey.value = null
+
+  try {
+    const preparedBlob = await convertFallbackAudioForProvider(audioBlob)
+    const transcript = await createVoiceInputTranscription(
+      preparedBlob,
+      {
+        language: normalizedLanguage.value === 'zh' ? 'zh' : 'en',
+      },
+    )
+    applyTranscriptToDraft(transcript)
+    resetVoiceInputState()
+  } catch (error) {
+    failVoiceInput(mapVoiceInputTranscriptionError(error))
   }
 }
 
 async function startFallbackRecording(): Promise<void> {
-  if (!voiceInputSupport.hasFallbackRecording || voiceInputSupport.requiresSecureContext) {
-    failVoiceInput('composer.voiceUnsupported')
+  if (!hasBrowserFallbackRecordingSupport()) {
+    failVoiceInput('composer.voiceTranscriptionFailed')
     return
   }
 
+  let stream: MediaStream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch (error) {
+    const errorName = error instanceof DOMException ? error.name : ''
+    if (errorName === 'NotAllowedError' || errorName === 'SecurityError') {
+      failVoiceInput('composer.voicePermissionDenied')
+      return
+    }
+    failVoiceInput('composer.voiceTranscriptionFailed')
+    return
+  }
+
+  const mimeType = pickFallbackRecordingMimeType()
+  const recorder = mimeType
+    ? new MediaRecorder(stream, { mimeType })
+    : new MediaRecorder(stream)
+  const chunks: BlobPart[] = []
+
+  activeFallbackStream.value = stream
+  activeFallbackRecorder.value = recorder
+  shouldTranscribeFallbackRecording.value = true
   voiceInputState.value = 'recording-fallback'
   voiceInputErrorKey.value = null
-  shouldDiscardFallbackRecording.value = false
 
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    activeMediaStream.value = stream
-    const mimeType = typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : ''
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
-    activeMediaRecorder.value = recorder
-    fallbackAudioChunks.value = []
-
-    recorder.addEventListener('dataavailable', (event) => {
-      if (event.data.size > 0) {
-        fallbackAudioChunks.value = [...fallbackAudioChunks.value, event.data]
-      }
-    })
-
-    recorder.addEventListener('stop', () => {
-      const chunks = [...fallbackAudioChunks.value]
-      const shouldDiscard = shouldDiscardFallbackRecording.value
-      clearFallbackRecordingState()
-      if (shouldDiscard) {
-        resetVoiceInputState()
-        return
-      }
-      if (chunks.length === 0) {
-        failVoiceInput('composer.voiceTranscriptionFailed')
-        return
-      }
-      void transcribeFallbackAudio(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }))
-    }, { once: true })
-
-    recorder.start()
-    fallbackAutoStopTimer.value = window.setTimeout(() => {
-      if (recorder.state !== 'inactive') {
-        recorder.stop()
-      }
-    }, 30000)
-  } catch (error) {
-    const isPermissionError = error instanceof DOMException
-      && (error.name === 'NotAllowedError' || error.name === 'SecurityError')
-    failVoiceInput(isPermissionError ? 'composer.voicePermissionDenied' : 'composer.voiceTranscriptionFailed')
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      chunks.push(event.data)
+    }
   }
-}
-
-function stopFallbackRecording(): void {
-  const recorder = activeMediaRecorder.value
-  if (!recorder || recorder.state === 'inactive') return
-  recorder.stop()
-}
-
-function discardFallbackRecording(): void {
-  const recorder = activeMediaRecorder.value
-  if (!recorder || recorder.state === 'inactive') {
-    clearFallbackRecordingState()
-    return
+  recorder.onerror = () => {
+    clearFallbackRecorder()
+    failVoiceInput('composer.voiceTranscriptionFailed')
   }
-  shouldDiscardFallbackRecording.value = true
-  recorder.stop()
+  recorder.onstop = () => {
+    const shouldTranscribe = shouldTranscribeFallbackRecording.value
+    const outputMimeType = recorder.mimeType || mimeType || 'application/octet-stream'
+    clearFallbackRecorder()
+    if (!shouldTranscribe) {
+      resetVoiceInputState()
+      return
+    }
+    void transcribeFallbackRecording(new Blob(chunks, { type: outputMimeType }))
+  }
+  recorder.start()
 }
 
 function onVoiceInputButtonClick(): void {
@@ -1404,18 +1570,17 @@ function onVoiceInputButtonClick(): void {
     activeSpeechRecognition.value?.stop()
     return
   }
-
   if (voiceInputState.value === 'recording-fallback') {
-    stopFallbackRecording()
+    activeFallbackRecorder.value?.stop()
     return
   }
 
-  if (voiceInputSupport.preferredMode === 'native') {
-    startNativeSpeechRecognition()
+  if (voiceInputSupport.value.preferredMode === 'openai-fallback') {
+    void startFallbackRecording()
     return
   }
 
-  void startFallbackRecording()
+  startNativeSpeechRecognition()
 }
 
 function onEnterKeydown(event: KeyboardEvent): void {
@@ -1542,12 +1707,14 @@ function onDocumentPointerDown(event: PointerEvent): void {
 
 onMounted(() => {
   window.addEventListener('pointerdown', onDocumentPointerDown)
+  void hydrateVoiceInputSupport()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', onDocumentPointerDown)
+  voiceCapabilityRequestController.value?.abort()
   activeSpeechRecognition.value?.stop()
-  discardFallbackRecording()
+  stopFallbackRecordingWithoutTranscription()
 })
 
 function onInterrupt(): void {
@@ -1605,8 +1772,9 @@ watch(
   () => {
     draft.value = ''
     pastedImages.value = []
+    voiceCapabilityRequestController.value?.abort()
     activeSpeechRecognition.value?.stop()
-    discardFallbackRecording()
+    stopFallbackRecordingWithoutTranscription()
     resetVoiceInputState()
     closeActionsMenu()
     closeBranchMenu()
@@ -1698,7 +1866,8 @@ watch(
 
 .thread-composer-voice-button[data-state='listening-native'],
 .thread-composer-voice-button[data-state='recording-fallback'],
-.thread-composer-voice-button[data-state='transcribing-fallback'] {
+.thread-composer-voice-button[data-state='transcribing-fallback'],
+.thread-composer-voice-button[data-state='failed'] {
   @apply border-rose-200 bg-rose-50 text-rose-700;
 }
 

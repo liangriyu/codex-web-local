@@ -17,10 +17,6 @@ const program = new Command()
   .option('--no-password', 'disable password protection')
   .option('--https-cert <path>', 'path to the HTTPS certificate (PEM)')
   .option('--https-key <path>', 'path to the HTTPS private key (PEM)')
-  .option('--stt-command <path>', 'path to the local speech-to-text executable')
-  .option('--stt-model <path>', 'path to the local speech-to-text model')
-  .option('--stt-language <code>', 'default speech-to-text language code')
-  .option('--stt-timeout-ms <ms>', 'local speech-to-text timeout in milliseconds', '45000')
   .parse()
 
 const runtimeConfig = normalizeCliRuntimeConfig(program.opts<{
@@ -30,10 +26,6 @@ const runtimeConfig = normalizeCliRuntimeConfig(program.opts<{
   password: string | boolean
   httpsCert?: string
   httpsKey?: string
-  sttCommand?: string
-  sttModel?: string
-  sttLanguage?: string
-  sttTimeoutMs?: string
 }>())
 const port = runtimeConfig.port
 const host = runtimeConfig.host
@@ -91,7 +83,7 @@ if (runtimeConfig.daemon) {
 
 const { app, dispose } = createApp({
   password,
-  transcriptionConfig: runtimeConfig.transcription,
+  voiceInputFallback: runtimeConfig.voiceInputFallback,
 })
 const server = runtimeConfig.https
   ? createHttpsServer({

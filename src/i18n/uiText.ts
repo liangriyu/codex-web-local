@@ -600,13 +600,13 @@ const UI_TEXT = {
     zh: '正在转写语音',
     en: 'Transcribing audio',
   },
-  'composer.voiceUnsupported': {
-    zh: '当前环境暂不支持语音输入',
-    en: 'Voice input is unavailable in this environment',
-  },
   'composer.voicePermissionDenied': {
     zh: '麦克风权限被拒绝',
     en: 'Microphone permission was denied',
+  },
+  'composer.voiceQuotaExceeded': {
+    zh: '语音转写额度不足，请检查当前 provider 的余额或更换 key',
+    en: 'Voice transcription quota was exceeded. Check billing or use another key.',
   },
   'composer.voiceTranscriptionFailed': {
     zh: '语音转写失败，请重试',

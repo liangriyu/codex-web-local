@@ -4,20 +4,14 @@ import express, { type Express } from 'express'
 import compression from 'compression'
 import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
 import { createAuthMiddleware } from './authMiddleware.js'
-import {
-  createLocalTranscriptionService,
-  parseTranscriptionFormData,
-  type LocalTranscriptionConfig,
-  type LocalTranscriptionService,
-} from './transcriptionService.js'
+import type { VoiceInputFallbackConfig } from './transcriptionService.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
 
 export type ServerOptions = {
   password?: string
-  transcriptionConfig?: LocalTranscriptionConfig
-  transcriptionService?: LocalTranscriptionService
+  voiceInputFallback?: VoiceInputFallbackConfig
 }
 
 export type ServerInstance = {
@@ -27,9 +21,13 @@ export type ServerInstance = {
 
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
-  const bridge = createCodexBridgeMiddleware()
-  const transcriptionService = options.transcriptionService
-    ?? createLocalTranscriptionService(options.transcriptionConfig)
+  const bridge = createCodexBridgeMiddleware({
+    voiceInputFallback: options.voiceInputFallback ?? {
+      provider: 'openai',
+      enabled: false,
+      model: 'gpt-4o-mini-transcribe',
+    },
+  })
 
   // Enable gzip/br compression by default, except SSE streams.
   app.use(compression({
@@ -46,26 +44,6 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   if (options.password) {
     app.use(createAuthMiddleware(options.password))
   }
-
-  app.post('/api/transcriptions', async (req, res) => {
-    if (!transcriptionService.isConfigured) {
-      res.status(503).json({ error: 'Local transcription is not configured' })
-      return
-    }
-
-    try {
-      const payload = await parseTranscriptionFormData(req)
-      const result = await transcriptionService.transcribeAudio(payload.audio, {
-        mimeType: payload.mimeType,
-        language: payload.language,
-      })
-      res.json(result)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Local transcription failed'
-      const status = /missing audio/i.test(message) ? 400 : 500
-      res.status(status).json({ error: message })
-    }
-  })
 
   // 2. Bridge middleware for /codex-api/*
   app.use(bridge)

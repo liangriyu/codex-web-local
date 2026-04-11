@@ -1,9 +1,8 @@
-export type VoiceInputMode = 'native' | 'fallback' | 'unsupported'
+export type VoiceInputMode = 'native' | 'openai-fallback' | 'unsupported'
 
 export type VoiceInputSupport = {
   hasNativeRecognition: boolean
-  hasFallbackRecording: boolean
-  requiresSecureContext: boolean
+  hasOpenAiFallback: boolean
   preferredMode: VoiceInputMode
 }
 
@@ -14,66 +13,58 @@ type WindowWithSpeechRecognition = Window & typeof globalThis & {
   webkitSpeechRecognition?: GlobalSpeechRecognitionConstructor
 }
 
-function getNavigatorUserAgent(): string {
-  if (typeof navigator === 'undefined') return ''
-  return navigator.userAgent || ''
-}
+function isKnownBrokenNativeSpeechRecognitionEnvironment(): boolean {
+  if (typeof navigator === 'undefined') return false
 
-export function isIosBrowser(): boolean {
-  const userAgent = getNavigatorUserAgent()
-  return /iPad|iPhone|iPod/iu.test(userAgent)
+  const platform = typeof navigator.platform === 'string' ? navigator.platform : ''
+  const userAgent = typeof navigator.userAgent === 'string' ? navigator.userAgent : ''
+  const maxTouchPoints = typeof navigator.maxTouchPoints === 'number' ? navigator.maxTouchPoints : 0
+  const isMacLike = /Mac/.test(platform) || /Macintosh|Mac OS X/.test(userAgent)
+
+  // iPadOS may report itself as Mac; keep touch-capable devices on the existing path.
+  return isMacLike && maxTouchPoints === 0
 }
 
 function hasNativeSpeechRecognition(): boolean {
   if (typeof window === 'undefined') return false
+  if (isKnownBrokenNativeSpeechRecognitionEnvironment()) return false
   const candidate = window as WindowWithSpeechRecognition
   return typeof candidate.SpeechRecognition === 'function'
     || typeof candidate.webkitSpeechRecognition === 'function'
 }
 
-function hasFallbackMediaRecorder(): boolean {
-  return typeof navigator !== 'undefined'
-    && typeof navigator.mediaDevices?.getUserMedia === 'function'
-    && typeof MediaRecorder !== 'undefined'
-}
-
 export function detectVoiceInputSupport(): VoiceInputSupport {
   const hasNativeRecognition = hasNativeSpeechRecognition()
-  const hasFallbackRecording = hasFallbackMediaRecorder()
-  const secureContextAvailable = typeof window !== 'undefined' ? window.isSecureContext === true : false
-  const requiresSecureContext = hasFallbackRecording && secureContextAvailable === false
-
-  if (isIosBrowser() && hasFallbackRecording) {
-    return {
-      hasNativeRecognition,
-      hasFallbackRecording,
-      requiresSecureContext,
-      preferredMode: 'fallback',
-    }
+  return {
+    hasNativeRecognition,
+    hasOpenAiFallback: false,
+    preferredMode: hasNativeRecognition ? 'native' : 'unsupported',
   }
+}
 
-  if (hasNativeRecognition) {
+export function resolveVoiceInputSupport(options: {
+  hasNativeRecognition: boolean
+  fallbackEnabled: boolean
+}): VoiceInputSupport {
+  if (options.hasNativeRecognition) {
     return {
-      hasNativeRecognition,
-      hasFallbackRecording,
-      requiresSecureContext,
+      hasNativeRecognition: true,
+      hasOpenAiFallback: options.fallbackEnabled,
       preferredMode: 'native',
     }
   }
 
-  if (hasFallbackRecording) {
+  if (options.fallbackEnabled) {
     return {
-      hasNativeRecognition,
-      hasFallbackRecording,
-      requiresSecureContext,
-      preferredMode: 'fallback',
+      hasNativeRecognition: false,
+      hasOpenAiFallback: true,
+      preferredMode: 'openai-fallback',
     }
   }
 
   return {
     hasNativeRecognition: false,
-    hasFallbackRecording: false,
-    requiresSecureContext: false,
+    hasOpenAiFallback: false,
     preferredMode: 'unsupported',
   }
 }

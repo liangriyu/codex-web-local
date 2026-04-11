@@ -105,6 +105,11 @@ export function createAuthMiddleware(password: string): RequestHandler {
       return
     }
 
+    if (req.path.startsWith('/codex-api/')) {
+      res.status(401).json({ error: 'Session expired. Refresh and sign in again.' })
+      return
+    }
+
     // No valid session — serve login page
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.status(200).send(LOGIN_PAGE_HTML)

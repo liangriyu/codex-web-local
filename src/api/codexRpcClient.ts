@@ -36,7 +36,10 @@ function isAbortError(error: unknown): boolean {
 }
 
 export async function rpcCall<T>(method: string, params?: unknown, options: RpcCallOptions = {}): Promise<T> {
-  const body: RpcRequestBody = { method, params: params ?? null }
+  const body: RpcRequestBody = { method }
+  if (params !== undefined) {
+    body.params = params
+  }
 
   let response: Response
   try {

@@ -30,23 +30,28 @@
 
 ## 语音输入运行说明
 
-- `Chrome / Edge 桌面` 与 `Android Chrome` 默认优先使用浏览器原生语音识别。
-- `iPhone Chrome` 默认依赖录音回退路径，因此需要：
-  - 使用 `HTTPS` 访问当前服务
-  - 配置本机离线 STT，可通过 `--stt-command` 与 `--stt-model` 启用
-- 若只配置了浏览器原生识别能力而未配置本机 STT，则 iPhone Chrome 无法获得稳定语音输入体验。
+- 浏览器原生语音识别仍是主通道。
+- 若运行环境不提供原生语音识别，只有服务端显式开启语音 fallback 时，Web UI 才显示录音按钮。
+- fallback 通过 `/codex-api/rpc` 下的 `web-local/voice-input/*` 私有 RPC 转到服务端语音 provider，不会修改线程消息协议。
+- 当前支持的 provider：
+  - `openai`：`gpt-4o-mini-transcribe`
+  - `zhipu`：`glm-asr-2512`
+- `iPhone` 或局域网浏览器使用录音回退时，仍建议通过 HTTPS 访问。
 
-## 语音输入相关 CLI 参数
+## 语音输入相关运行配置
 
 - `--https-cert <path>`
 - `--https-key <path>`
-- `--stt-command <path>`
-- `--stt-model <path>`
-- `--stt-language <code>`
-- `--stt-timeout-ms <ms>`
+- `CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER=openai|zhipu`
+- OpenAI:
+  - `OPENAI_API_KEY`
+  - `CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED=1`
+- 智谱:
+  - `ZHIPU_API_KEY`
+  - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
 
 ## 局域网与 iPhone 使用建议
 
-- 需要在局域网内让 iPhone 浏览器使用语音输入时，优先通过 `https://<局域网地址>:<端口>` 访问。
+- 需要在局域网内让 iPhone 浏览器访问 Web UI 时，优先通过 `https://<局域网地址>:<端口>` 访问。
 - 如果证书是自签发或本地 CA 颁发，需要在 iPhone 上安装并信任对应证书。
-- `http://局域网IP` 仍可访问普通 Web UI，但不能作为 iPhone 录音回退的可靠方案。
+- `http://局域网IP` 仍可访问普通 Web UI，但不适合作为录音回退的长期方案。

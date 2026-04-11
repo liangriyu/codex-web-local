@@ -28,6 +28,12 @@ import {
 } from './threadFileChangesFallback.ts'
 // @ts-ignore - tests import this TypeScript module directly via node:test.
 import { mergeThreadFileChangeTimelines } from '../utils/threadFileChanges.ts'
+import {
+  MAX_AUDIO_BYTES,
+  createTranscriptionService,
+  TranscriptionServiceError,
+  type VoiceInputFallbackConfig,
+} from './transcriptionService.js'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -97,6 +103,12 @@ const SHARED_SESSION_RPC_TRIGGER_METHODS = new Set([
   'thread/resume',
   'thread/start',
 ])
+const PRIVATE_VOICE_INPUT_CAPABILITY_METHOD = 'web-local/voice-input/capability/read'
+const PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD = 'web-local/voice-input/transcription/create'
+const PRIVATE_RPC_METHODS = [
+  PRIVATE_VOICE_INPUT_CAPABILITY_METHOD,
+  PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
+]
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -164,6 +176,18 @@ function setJson(res: ServerResponse, statusCode: number, payload: unknown): voi
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(payload))
+}
+
+class PrivateRpcError extends Error {
+  readonly code: number
+  readonly statusCode: number
+
+  constructor(code: number, message: string, statusCode: number) {
+    super(message)
+    this.name = 'PrivateRpcError'
+    this.code = code
+    this.statusCode = statusCode
+  }
 }
 
 function normalizePreviewPath(rawPath: string): string {
@@ -1221,6 +1245,117 @@ class AppServerProcess {
   private readonly persistedServerRequestsLedgerPath = getPersistedServerRequestsLedgerPath()
   private persistedServerRequestsLoaded: Promise<void> | null = null
   private persistedServerRequestsFlushChain: Promise<void> = Promise.resolve()
+  private voiceInputFallbackConfig: VoiceInputFallbackConfig = {
+    provider: 'openai',
+    enabled: false,
+    model: 'gpt-4o-mini-transcribe',
+  }
+
+  setVoiceInputFallbackConfig(config: VoiceInputFallbackConfig): void {
+    this.voiceInputFallbackConfig = config
+  }
+
+  private getTranscriptionService() {
+    return createTranscriptionService(this.voiceInputFallbackConfig)
+  }
+
+  private async handleVoiceInputPrivateRpc(method: string, params: unknown): Promise<unknown> {
+    const transcriptionService = this.getTranscriptionService()
+
+    if (method === PRIVATE_VOICE_INPUT_CAPABILITY_METHOD) {
+      return transcriptionService.getCapability()
+    }
+
+    if (method !== PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD) {
+      throw new PrivateRpcError(-32602, 'Invalid private RPC method', 400)
+    }
+
+    const body = asRecord(params)
+    if (!body) {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    const audioBase64 = readText(body.audioBase64)
+    const contentType = readText(body.contentType)
+    const language = readText(body.language) || undefined
+
+    if (!audioBase64 || !contentType) {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    let audio: Buffer
+    try {
+      audio = Buffer.from(audioBase64, 'base64')
+    } catch {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    if (audio.length === 0) {
+      throw new PrivateRpcError(-32013, 'Audio payload is empty', 400)
+    }
+    if (audio.length > MAX_AUDIO_BYTES) {
+      throw new PrivateRpcError(-32012, 'Audio payload too large', 413)
+    }
+    if (!transcriptionService.getCapability().acceptedMimeTypes.some((value) => value === contentType)) {
+      throw new PrivateRpcError(-32011, 'Unsupported audio content type', 415)
+    }
+
+    try {
+      const text = await transcriptionService.transcribeAudio({
+        audio,
+        contentType,
+        language,
+      })
+      return {
+        text,
+        provider: transcriptionService.getCapability().provider,
+        model: transcriptionService.getCapability().model,
+      }
+    } catch (error) {
+      if (error instanceof TranscriptionServiceError) {
+        const activeProvider = this.voiceInputFallbackConfig.provider === 'zhipu' ? 'zhipu' : 'openai'
+        if (error.status === 503) {
+          throw new PrivateRpcError(-32010, error.message, 503)
+        }
+        if (error.status === 415) {
+          throw new PrivateRpcError(-32011, error.message, 415)
+        }
+        if (error.status === 413) {
+          throw new PrivateRpcError(-32012, error.message, 413)
+        }
+        if (error.status === 400) {
+          throw new PrivateRpcError(-32013, error.message, 400)
+        }
+        const normalizedMessage = error.message.toLowerCase()
+        if (
+          normalizedMessage.includes('insufficient_quota')
+          || normalizedMessage.includes('quota exceeded')
+          || normalizedMessage.includes('余额不足')
+          || normalizedMessage.includes('quota')
+          || normalizedMessage.includes('balance')
+          || (activeProvider === 'zhipu' && normalizedMessage.includes('资源包'))
+        ) {
+          throw new PrivateRpcError(-32017, 'Voice transcription quota exceeded', 402)
+        }
+        if (error.status === 429) {
+          throw new PrivateRpcError(-32015, 'Transcription upstream rate limited', 429)
+        }
+        if (normalizedMessage.includes('did not include text')) {
+          throw new PrivateRpcError(-32016, 'Transcription upstream returned no text', 502)
+        }
+        throw new PrivateRpcError(-32014, 'Transcription upstream request failed', 502)
+      }
+      throw error
+    }
+  }
+
+  private async handlePrivateRpc(method: string, params: unknown): Promise<unknown> {
+    if (method === PRIVATE_VOICE_INPUT_CAPABILITY_METHOD || method === PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD) {
+      return this.handleVoiceInputPrivateRpc(method, params)
+    }
+
+    return PRIVATE_RPC_NOT_HANDLED
+  }
 
   private start(): void {
     if (this.process) return
@@ -1880,6 +2015,11 @@ class AppServerProcess {
   }
 
   async rpc(method: string, params: unknown): Promise<unknown> {
+    const privateResult = await this.handlePrivateRpc(method, params)
+    if (privateResult !== PRIVATE_RPC_NOT_HANDLED) {
+      return privateResult
+    }
+
     await this.ensureInitialized()
     return this.call(method, params)
   }
@@ -2152,7 +2292,10 @@ class MethodCatalog {
     const clientRequestPath = join(outDir, 'ClientRequest.json')
     const raw = await readFile(clientRequestPath, 'utf8')
     const parsed = JSON.parse(raw) as unknown
-    const methods = this.extractMethodsFromClientRequest(parsed)
+    const methods = Array.from(new Set([
+      ...this.extractMethodsFromClientRequest(parsed),
+      ...PRIVATE_RPC_METHODS,
+    ])).sort((a, b) => a.localeCompare(b))
 
     this.methodCache = methods
     return methods
@@ -2185,6 +2328,8 @@ type SharedBridgeState = {
   methodCatalog: MethodCatalog
 }
 
+const PRIVATE_RPC_NOT_HANDLED = Symbol('PRIVATE_RPC_NOT_HANDLED')
+
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
 
 function getSharedBridgeState(): SharedBridgeState {
@@ -2203,8 +2348,13 @@ function getSharedBridgeState(): SharedBridgeState {
   return created
 }
 
-export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
+export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig } = {}): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
+  appServer.setVoiceInputFallbackConfig(options.voiceInputFallback ?? {
+    provider: 'openai',
+    enabled: false,
+    model: 'gpt-4o-mini-transcribe',
+  })
 
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {
@@ -2219,16 +2369,28 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const payload = await readJsonBody(req)
         const body = asRecord(payload) as RpcProxyRequest | null
 
-      if (!body || typeof body.method !== 'string' || body.method.length === 0) {
-        setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
-        return
-      }
+        if (!body || typeof body.method !== 'string' || body.method.length === 0) {
+          setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
+          return
+        }
 
-      const result = await appServer.rpc(body.method, body.params ?? null)
-      appServer.triggerSharedSessionSnapshotSync(readThreadIdFromRpcPayload(body.method, body.params ?? null, result))
-      setJson(res, 200, { result })
-      return
-    }
+        const params = Object.prototype.hasOwnProperty.call(body, 'params')
+          ? body.params
+          : undefined
+
+        try {
+          const result = await appServer.rpc(body.method, params)
+          appServer.triggerSharedSessionSnapshotSync(readThreadIdFromRpcPayload(body.method, params, result))
+          setJson(res, 200, { result })
+          return
+        } catch (error) {
+          if (error instanceof PrivateRpcError) {
+            setJson(res, error.statusCode, { error: { code: error.code, message: error.message } })
+            return
+          }
+          throw error
+        }
+      }
 
       if (req.method === 'POST' && url.pathname === '/codex-api/server-requests/respond') {
         const payload = await readJsonBody(req)

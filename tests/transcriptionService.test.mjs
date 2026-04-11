@@ -1,93 +1,28 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-import { createLocalTranscriptionService } from '../src/server/transcriptionService.ts'
+async function read(path) {
+  return readFile(new URL(path, import.meta.url), 'utf8')
+}
 
-test('local transcription service reports unavailable when STT is not configured', async () => {
-  const service = createLocalTranscriptionService({})
+test('http server no longer exposes dedicated voice transcription routes', async () => {
+  const source = await read('../src/server/httpServer.ts')
 
-  await assert.rejects(
-    () => service.transcribeAudio(Buffer.from('test'), { mimeType: 'audio/webm' }),
-    /not configured/i,
-  )
+  assert.doesNotMatch(source, /\/api\/voice-input-capability/)
+  assert.doesNotMatch(source, /\/api\/transcriptions/)
 })
 
-test('local transcription service returns transcript after executor writes output file', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'codex-web-local-transcription-'))
-  const modelPath = join(workspace, 'ggml-base.bin')
-  await writeFile(modelPath, 'model')
+test('service supports openai and zhipu providers for private rpc voice input', async () => {
+  const source = await read('../src/server/transcriptionService.ts').catch(() => '')
 
-  const service = createLocalTranscriptionService({
-    command: '/usr/local/bin/whisper-cli',
-    model: modelPath,
-    execFileImpl: async (_command, args) => {
-      const outputIndex = args.indexOf('-of')
-      const outputBase = outputIndex >= 0 ? args[outputIndex + 1] : ''
-      await writeFile(`${outputBase}.txt`, 'transcribed text\n')
-      return { stdout: '', stderr: '' }
-    },
-  })
-
-  const result = await service.transcribeAudio(Buffer.from('voice'), { mimeType: 'audio/webm', language: 'zh' })
-
-  assert.equal(result.text, 'transcribed text')
-  assert.equal(result.engine, 'local')
-
-  await rm(workspace, { recursive: true, force: true })
-})
-
-test('local transcription service surfaces executor failures', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'codex-web-local-transcription-error-'))
-  const modelPath = join(workspace, 'ggml-base.bin')
-  await writeFile(modelPath, 'model')
-
-  const service = createLocalTranscriptionService({
-    command: '/usr/local/bin/whisper-cli',
-    model: modelPath,
-    execFileImpl: async () => {
-      throw new Error('engine exploded')
-    },
-  })
-
-  await assert.rejects(
-    () => service.transcribeAudio(Buffer.from('voice'), { mimeType: 'audio/webm' }),
-    /engine exploded/i,
-  )
-
-  await rm(workspace, { recursive: true, force: true })
-})
-
-test('local transcription service maps executor timeout to a stable error', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'codex-web-local-transcription-timeout-'))
-  const modelPath = join(workspace, 'ggml-base.bin')
-  await writeFile(modelPath, 'model')
-
-  const service = createLocalTranscriptionService({
-    command: '/usr/local/bin/whisper-cli',
-    model: modelPath,
-    execFileImpl: async () => {
-      const error = new Error('timed out')
-      error.killed = true
-      throw error
-    },
-  })
-
-  await assert.rejects(
-    () => service.transcribeAudio(Buffer.from('voice'), { mimeType: 'audio/webm' }),
-    /timed out/i,
-  )
-
-  await rm(workspace, { recursive: true, force: true })
-})
-
-test('http server wires the local transcription route before the codex bridge', async () => {
-  const source = await readFile(new URL('../src/server/httpServer.ts', import.meta.url), 'utf8')
-
-  assert.match(source, /app\.post\('\/api\/transcriptions'/)
-  assert.match(source, /parseTranscriptionFormData/)
-  assert.match(source, /transcriptionService\.transcribeAudio/)
-  assert.match(source, /createLocalTranscriptionService/)
+  assert.match(source, /provider:\s*'openai'\s*\|\s*'zhipu'/)
+  assert.match(source, /gpt-4o-mini-transcribe/)
+  assert.match(source, /https:\/\/api\.openai\.com\/v1\/audio\/transcriptions/)
+  assert.match(source, /glm-asr-2512/)
+  assert.match(source, /https:\/\/open\.bigmodel\.cn\/api\/paas\/v4\/audio\/transcriptions/)
+  assert.match(source, /acceptedMimeTypes|ALLOWED_AUDIO_CONTENT_TYPES/)
+  assert.match(source, /maxAudioBytes|MAX_AUDIO_BYTES/)
+  assert.doesNotMatch(source, /whisper\.cpp/)
+  assert.doesNotMatch(source, /--stt-command/)
 })

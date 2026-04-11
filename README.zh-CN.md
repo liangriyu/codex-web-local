@@ -33,10 +33,6 @@ Options:
   --no-password        关闭密码保护
   --https-cert <path>  HTTPS 证书路径（PEM）
   --https-key <path>   HTTPS 私钥路径（PEM）
-  --stt-command <path> 本地语音转写可执行文件路径
-  --stt-model <path>   本地语音转写模型路径
-  --stt-language <code> 默认语音转写语言代码
-  --stt-timeout-ms <ms> 本地语音转写超时时间（毫秒）
   -h, --help           显示帮助
 ```
 
@@ -66,14 +62,12 @@ codex-web-local --host 0.0.0.0
 # Tailscale 场景 + 后台运行
 codex-web-local --host "$(tailscale ip -4)" --port 3000 --daemon
 
-# 启用 HTTPS 与本地离线语音转写
+# 启用 HTTPS
 codex-web-local \
   --host 0.0.0.0 \
   --port 3443 \
   --https-cert ./certs/dev.pem \
-  --https-key ./certs/dev-key.pem \
-  --stt-command /usr/local/bin/whisper-cli \
-  --stt-model ./models/ggml-base.bin
+  --https-key ./certs/dev-key.pem
 ```
 
 ### 开发命令（Vite）
@@ -98,8 +92,8 @@ npm run dev -- --host 0.0.0.0 --daemon
   - context window 用量圆环（hover 显示详细信息）
   - 剩余额度悬浮卡片
 - 输入器已支持语音输入：
-  - `Chrome / Edge 桌面` 与 `Android Chrome` 优先走浏览器原生识别
-  - `iPhone Chrome` 在启用 HTTPS 且配置本地离线 STT 时走录音回退
+  - 浏览器原生语音识别仍是主通道
+  - 不支持原生识别时，只有服务端显式开启语音 fallback 才会展示录音入口
   - 转写文本只会回填到输入框，不会自动发送
 - context 悬浮卡片支持手动“立即压缩”（调用 `thread/compact/start`）。
 - 左侧线程列表以 `name` 作为主标题，`preview` 通过 tooltip 展示，不再在 hover 时行内展开。
@@ -108,9 +102,18 @@ npm run dev -- --host 0.0.0.0 --daemon
 ## 语音输入说明
 
 - 语音功能不会修改线程消息协议，只会把识别结果写回输入框草稿。
-- `iPhone Chrome` 的录音回退依赖 `HTTPS`；仅使用 `http://局域网IP` 无法可靠获取麦克风权限。
-- 对 `Chrome / Edge 桌面` 和 `Android Chrome`，本地离线 STT 是可选增强；但对 `iPhone Chrome` 的回退路径，它是必需前提。
-- 当前实现按 `whisper.cpp` 这一类本地可执行程序接入，通过 `--stt-command` 与 `--stt-model` 配置。
+- 当前版本仍未恢复本地离线 STT；回退链路是 `codex-web-local` bridge 私有 RPC 转到服务端语音 provider。
+- 当前支持的 provider：
+  - `openai`：`gpt-4o-mini-transcribe`
+  - `zhipu`：`glm-asr-2512`
+- 通过 `CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER=openai|zhipu` 选择当前 provider。
+- OpenAI fallback 需要同时设置：
+  - `OPENAI_API_KEY`
+  - `CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED=1`
+- 智谱 fallback 需要同时设置：
+  - `ZHIPU_API_KEY`
+  - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
+- `iPhone` 或局域网浏览器使用录音回退时，仍建议通过 HTTPS 访问。
 
 ## 守护进程说明
 

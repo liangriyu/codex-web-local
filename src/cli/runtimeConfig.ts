@@ -1,5 +1,3 @@
-import type { LocalTranscriptionConfig } from '../server/transcriptionService'
-
 export type RawCliRuntimeOptions = {
   port: string
   host?: string
@@ -7,10 +5,15 @@ export type RawCliRuntimeOptions = {
   password: string | boolean
   httpsCert?: string
   httpsKey?: string
-  sttCommand?: string
-  sttModel?: string
-  sttLanguage?: string
-  sttTimeoutMs?: string
+}
+
+export type VoiceInputProvider = 'openai' | 'zhipu'
+
+export type VoiceInputFallbackConfig = {
+  provider: VoiceInputProvider
+  enabled: boolean
+  apiKey?: string
+  model: string
 }
 
 export type NormalizedCliRuntimeConfig = {
@@ -22,7 +25,7 @@ export type NormalizedCliRuntimeConfig = {
     cert: string
     key: string
   }
-  transcription?: LocalTranscriptionConfig
+  voiceInputFallback: VoiceInputFallbackConfig
 }
 
 export function formatAccessUrl(bindHost: string | undefined, bindPort: number, useHttps = false): string {
@@ -34,7 +37,39 @@ export function formatAccessUrl(bindHost: string | undefined, bindPort: number, 
   return `${protocol}://${normalizedHost}:${String(bindPort)}`
 }
 
-export function normalizeCliRuntimeConfig(raw: RawCliRuntimeOptions): NormalizedCliRuntimeConfig {
+function normalizeVoiceInputFallbackConfig(env: NodeJS.ProcessEnv): VoiceInputFallbackConfig {
+  const rawProvider = env.CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER?.trim().toLowerCase()
+  const provider: VoiceInputProvider = rawProvider === 'zhipu' ? 'zhipu' : 'openai'
+
+  if (provider === 'zhipu') {
+    const apiKey = env.ZHIPU_API_KEY?.trim()
+    const enabledFlag = env.CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED?.trim().toLowerCase()
+    const enabled = Boolean(apiKey) && (enabledFlag === '1' || enabledFlag === 'true' || enabledFlag === 'yes')
+
+    return {
+      provider,
+      enabled,
+      apiKey: apiKey || undefined,
+      model: 'glm-asr-2512',
+    }
+  }
+
+  const apiKey = env.OPENAI_API_KEY?.trim()
+  const enabledFlag = env.CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED?.trim().toLowerCase()
+  const enabled = Boolean(apiKey) && (enabledFlag === '1' || enabledFlag === 'true' || enabledFlag === 'yes')
+
+  return {
+    provider,
+    enabled,
+    apiKey: apiKey || undefined,
+    model: 'gpt-4o-mini-transcribe',
+  }
+}
+
+export function normalizeCliRuntimeConfig(
+  raw: RawCliRuntimeOptions,
+  env: NodeJS.ProcessEnv = process.env,
+): NormalizedCliRuntimeConfig {
   const httpsCert = raw.httpsCert?.trim() ?? ''
   const httpsKey = raw.httpsKey?.trim() ?? ''
 
@@ -44,11 +79,6 @@ export function normalizeCliRuntimeConfig(raw: RawCliRuntimeOptions): Normalized
   if (httpsKey && !httpsCert) {
     throw new Error('HTTPS cert is required when HTTPS key is provided')
   }
-
-  const sttCommand = raw.sttCommand?.trim() ?? ''
-  const sttModel = raw.sttModel?.trim() ?? ''
-  const sttLanguage = raw.sttLanguage?.trim() ?? ''
-  const parsedTimeout = Number.parseInt(raw.sttTimeoutMs ?? '', 10)
 
   return {
     port: Number.parseInt(raw.port, 10),
@@ -61,13 +91,6 @@ export function normalizeCliRuntimeConfig(raw: RawCliRuntimeOptions): Normalized
           key: httpsKey,
         }
       : undefined,
-    transcription: sttCommand && sttModel
-      ? {
-          command: sttCommand,
-          model: sttModel,
-          language: sttLanguage || undefined,
-          timeoutMs: Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 45000,
-        }
-      : undefined,
+    voiceInputFallback: normalizeVoiceInputFallbackConfig(env),
   }
 }
