@@ -7,11 +7,13 @@
 - 本地启动、开发调试、守护进程运行
 - 网络访问方式（LAN、Tailscale）
 - 常见运行故障排查
+- Cloudflare Tunnel 域名访问异常排查
 
 ## 先看顺序
 1. [agent-handoff.md](./agent-handoff.md)（代理接手 SOP）
 2. 根目录 `README.md`（安装与基础命令）
 3. 根目录 `README.zh-CN.md`（中文说明）
+4. [cloudflare-tunnel-troubleshooting.md](./cloudflare-tunnel-troubleshooting.md)（域名代理不稳定、`530`、Edge 连接丢失）
 
 ## 更新触发
 当以下内容变化时，必须更新本目录文档：

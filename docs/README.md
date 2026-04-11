@@ -4,6 +4,7 @@
 
 ## 按任务类型找入口
 - 运行/启动/调试/排障：先看 [runtime/README.md](./runtime/README.md)
+- Cloudflare Tunnel 域名不稳定：看 [runtime/cloudflare-tunnel-troubleshooting.md](./runtime/cloudflare-tunnel-troubleshooting.md)
 - 业务流程/模块职责/行为约束：先看 [business/README.md](./business/README.md)
 - API 协议、消息结构、schema 维护：先看 [contracts/README.md](./contracts/README.md)
 - 多步骤改造、跨目录重构：先看 [plans/README.md](./plans/README.md)
