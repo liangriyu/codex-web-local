@@ -208,10 +208,9 @@ async function refreshBootstrap(options: {
 
   try {
     const accountReader = options.refreshToken === true ? refreshAccountStatus : getAccountStatus
-    const [accountSnapshot, configSnapshot, limits] = await Promise.all([
+    const [accountSnapshot, configSnapshot] = await Promise.all([
       accountReader(),
       readCodexConfig(),
-      getAccountRateLimitSnapshot(),
     ])
 
     currentAccount.value = accountSnapshot.account
@@ -220,7 +219,13 @@ async function refreshBootstrap(options: {
     forcedLoginMethod.value = configSnapshot.forcedLoginMethod
     mobileDirectAuthAvailable.value = configSnapshot.mobileDirectAuthAvailable
     publicBaseUrl.value = configSnapshot.publicBaseUrl ?? ''
-    rateLimitSnapshot.value = limits
+
+    if (accountSnapshot.account) {
+      await refreshRateLimits()
+    } else {
+      rateLimitSnapshot.value = null
+    }
+
     accountStatus.value = deriveAccountStatus(accountSnapshot.account, accountSnapshot.requiresOpenaiAuth)
 
     if (options.preserveLoginFlow !== true && loginFlow.value !== 'waiting_completion') {
@@ -299,6 +304,15 @@ function showApiKeyForm(): void {
   error.value = ''
 }
 
+async function startHostBrowserChatgptLogin(): Promise<void> {
+  const result = await startAccountLogin({ type: 'chatgpt' })
+  activeLoginId.value = result.loginId ?? ''
+  activeMobileLoginSessionId.value = ''
+  pendingAuthUrl.value = result.authUrl ?? ''
+  loginFlow.value = 'waiting_completion'
+  await openPendingAuthPage()
+}
+
 async function beginChatgptLogin(): Promise<void> {
   error.value = ''
   isSubmitting.value = true
@@ -307,25 +321,31 @@ async function beginChatgptLogin(): Promise<void> {
 
   try {
     if (mobileDirectAuthAvailable.value) {
-      const result = await startMobileChatgptLogin()
-      activeLoginId.value = ''
-      activeMobileLoginSessionId.value = result.loginSessionId
-      pendingAuthUrl.value = result.authUrl
-      loginFlow.value = 'waiting_completion'
-      await openPendingAuthPage()
-      stopMobileLoginPolling()
-      mobileLoginPollTimer = setTimeout(() => {
-        void pollMobileLoginStatus()
-      }, 1500)
-      return
+      try {
+        const result = await startMobileChatgptLogin()
+        activeLoginId.value = ''
+        activeMobileLoginSessionId.value = result.loginSessionId
+        pendingAuthUrl.value = result.authUrl
+        loginFlow.value = 'waiting_completion'
+        await openPendingAuthPage()
+        stopMobileLoginPolling()
+        mobileLoginPollTimer = setTimeout(() => {
+          void pollMobileLoginStatus()
+        }, 1500)
+        return
+      } catch (mobileError) {
+        // Keep login available when direct mobile auth prep fails unexpectedly.
+        clearPendingLoginState()
+        console.warn(
+          '[account-center] Mobile direct auth failed; falling back to host-browser ChatGPT login.',
+          mobileError,
+        )
+        await startHostBrowserChatgptLogin()
+        return
+      }
     }
 
-    const result = await startAccountLogin({ type: 'chatgpt' })
-    activeLoginId.value = result.loginId ?? ''
-    activeMobileLoginSessionId.value = ''
-    pendingAuthUrl.value = result.authUrl ?? ''
-    loginFlow.value = 'waiting_completion'
-    await openPendingAuthPage()
+    await startHostBrowserChatgptLogin()
   } catch (unknownError) {
     loginFlow.value = 'failed'
     error.value = unknownError instanceof Error ? unknownError.message : 'Failed to start ChatGPT login'
