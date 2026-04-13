@@ -1305,11 +1305,21 @@ class AppServerProcess {
     return configured && configured.length > 0 ? configured : null
   }
 
+  private setActiveCodexHomeDir(codexHomeDir: string | null): void {
+    const normalized = readText(codexHomeDir)
+    this.codexHomeOverride = normalized || null
+    if (normalized) {
+      process.env.CODEX_HOME = normalized
+      return
+    }
+    delete process.env.CODEX_HOME
+  }
+
   private async ensureActiveProfileLoaded(): Promise<void> {
     if (this.codexHomeOverride && this.codexHomeOverride.trim().length > 0) return
     const snapshot = await this.accountProfileStore.list()
     const active = snapshot.profiles.find((profile) => profile.id === snapshot.activeProfileId) ?? null
-    this.codexHomeOverride = active?.codexHomeDir ?? this.getCurrentCodexHomeDir()
+    this.setActiveCodexHomeDir(active?.codexHomeDir ?? this.getCurrentCodexHomeDir())
   }
 
   async listAccountProfiles(): Promise<{ activeProfileId: string; profiles: AccountProfile[] }> {
@@ -1328,7 +1338,7 @@ class AppServerProcess {
   async switchAccountProfile(profileId: string): Promise<AccountProfile> {
     this.dispose()
     const profile = await this.accountProfileStore.setActive(profileId)
-    this.codexHomeOverride = profile.codexHomeDir
+    this.setActiveCodexHomeDir(profile.codexHomeDir)
     return profile
   }
 

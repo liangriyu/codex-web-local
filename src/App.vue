@@ -398,6 +398,7 @@ const {
   isAutoRefreshEnabled,
   autoRefreshSecondsLeft,
   error,
+  resetSessionViewStateForProfileSwitch,
   refreshAll,
   selectThread,
   setThreadScrollState,
@@ -797,8 +798,13 @@ function onStartChatgptLoginNewProfile(): void {
   void beginChatgptLogin({ createNewProfile: true })
 }
 
-function onSwitchAccountProfile(profileId: string): void {
-  void switchToAccountProfile(profileId)
+async function onSwitchAccountProfile(profileId: string): Promise<void> {
+  const previousProfileId = activeProfileId.value
+  await switchToAccountProfile(profileId)
+  if (activeProfileId.value !== previousProfileId) {
+    resetSessionViewStateForProfileSwitch()
+    await refreshAll()
+  }
 }
 
 function onSubmitAccountApiKey(): void {

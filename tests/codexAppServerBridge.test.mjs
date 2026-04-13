@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -182,6 +182,36 @@ async function withFreshBridge(fn) {
   }
 }
 
+function baseSharedSnapshot(sessionId, title = sessionId) {
+  return {
+    sessionId,
+    sourceThreadId: sessionId,
+    sourceConversationId: null,
+    title,
+    cwd: '/tmp/workspace',
+    owner: 'web',
+    ownerInstanceId: null,
+    ownerLeaseExpiresAtIso: null,
+    state: 'idle',
+    activeTurnId: null,
+    updatedAtIso: '2026-04-13T00:00:00.000Z',
+    timeline: [],
+    latestTurnSummary: null,
+    attention: {
+      pendingApprovalCount: 0,
+      pendingApprovalKinds: [],
+      pendingAttentionCount: 0,
+      latestErrorMessage: null,
+      requiresReturnToOwner: false,
+    },
+    capabilities: {
+      canViewHistory: true,
+      canRequestTakeover: true,
+      canApproveInCurrentClient: false,
+    },
+  }
+}
+
 test('concurrent ensureInitialized calls only initialize once', async () => {
   await withFreshBridge(async () => {
     const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
@@ -219,6 +249,73 @@ test('concurrent ensureInitialized calls only initialize once', async () => {
       appServer.initialized = originalInitialized
       appServer.initializePromise = originalInitializePromise
     }
+  })
+})
+
+test('shared session listing follows active account profile after switching', async () => {
+  await withFreshBridge(async ({ middleware }) => {
+    const profilesRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/account-profiles',
+    )
+    assert.equal(profilesRes.statusCode, 200)
+    const profilesBody = parseBody(profilesRes)
+    const defaultProfile = profilesBody.data.profiles.find((profile) => profile.id === 'default')
+    assert.ok(defaultProfile)
+
+    const createdRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles',
+      { name: '账号 2' },
+    )
+    assert.equal(createdRes.statusCode, 200)
+    const createdBody = parseBody(createdRes)
+    const secondProfile = createdBody.data
+    assert.ok(secondProfile?.id)
+    assert.ok(secondProfile?.codexHomeDir)
+
+    await mkdir(join(defaultProfile.codexHomeDir, 'shared-sessions'), { recursive: true })
+    await mkdir(join(secondProfile.codexHomeDir, 'shared-sessions'), { recursive: true })
+    await writeFile(
+      join(defaultProfile.codexHomeDir, 'shared-sessions', 'default-only.json'),
+      JSON.stringify(baseSharedSnapshot('default-only')),
+      'utf8',
+    )
+    await writeFile(
+      join(secondProfile.codexHomeDir, 'shared-sessions', 'second-only.json'),
+      JSON.stringify(baseSharedSnapshot('second-only')),
+      'utf8',
+    )
+
+    const beforeSwitch = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/shared-sessions',
+    )
+    assert.equal(beforeSwitch.statusCode, 200)
+    const beforeIds = parseBody(beforeSwitch).data.map((snapshot) => snapshot.sessionId)
+    assert.ok(beforeIds.includes('default-only'))
+    assert.ok(!beforeIds.includes('second-only'))
+
+    const switchRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles/switch',
+      { profileId: secondProfile.id },
+    )
+    assert.equal(switchRes.statusCode, 200)
+
+    const afterSwitch = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/shared-sessions',
+    )
+    assert.equal(afterSwitch.statusCode, 200)
+    const afterIds = parseBody(afterSwitch).data.map((snapshot) => snapshot.sessionId)
+    assert.ok(afterIds.includes('second-only'))
+    assert.ok(!afterIds.includes('default-only'))
   })
 })
 

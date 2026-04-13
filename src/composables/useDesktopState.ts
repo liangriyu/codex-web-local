@@ -2245,6 +2245,14 @@ export function useDesktopState() {
     }
   }
 
+  function resetSessionViewStateForProfileSwitch(): void {
+    projectOrder.value = []
+    saveProjectOrder(projectOrder.value)
+    projectDisplayNameById.value = {}
+    saveProjectDisplayNames(projectDisplayNameById.value)
+    setSelectedThreadId('')
+  }
+
   async function selectThread(threadId: string) {
     const requestToken = ++latestSelectRequestToken
     selectThreadLoadAbortController?.abort()
@@ -2822,6 +2830,7 @@ export function useDesktopState() {
     isAutoRefreshEnabled,
     autoRefreshSecondsLeft,
     error,
+    resetSessionViewStateForProfileSwitch,
     refreshAll,
     selectThread,
     setThreadScrollState,
