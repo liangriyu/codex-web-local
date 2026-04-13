@@ -34,14 +34,8 @@ import {
   TranscriptionServiceError,
   type VoiceInputFallbackConfig,
 } from './transcriptionService.js'
-import {
-  buildMobileAuthRelayUrl,
-  MobileAuthSessionStore,
-  normalizePublicBaseUrl,
-  rewriteAuthUrlForMobileCallback,
-  type MobileAuthSessionStatus,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
-} from './mobileAuthSessionStore.js'
+import { AccountProfileStore, type AccountProfile } from './accountProfileStore.js'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -114,26 +108,11 @@ const SHARED_SESSION_RPC_TRIGGER_METHODS = new Set([
 const PRIVATE_VOICE_INPUT_CAPABILITY_METHOD = 'web-local/voice-input/capability/read'
 const PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD = 'web-local/voice-input/transcription/create'
 const PRIVATE_BROWSER_OPEN_METHOD = 'web-local/browser/open'
-const WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY = 'codex_web_local_mobile_direct_auth_available'
-const WEB_LOCAL_PUBLIC_BASE_URL_KEY = 'codex_web_local_public_base_url'
 const PRIVATE_RPC_METHODS = [
   PRIVATE_VOICE_INPUT_CAPABILITY_METHOD,
   PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
   PRIVATE_BROWSER_OPEN_METHOD,
 ]
-
-type MobileChatgptLoginStartResult = {
-  loginSessionId: string
-  authUrl: string
-  expiresAt: string
-}
-
-type MobileChatgptLoginStatusResult = {
-  loginSessionId: string
-  status: MobileAuthSessionStatus
-  expiresAt: string | null
-  error: string | null
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -201,12 +180,6 @@ function setJson(res: ServerResponse, statusCode: number, payload: unknown): voi
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(payload))
-}
-
-function setHtml(res: ServerResponse, statusCode: number, html: string): void {
-  res.statusCode = statusCode
-  res.setHeader('Content-Type', 'text/html; charset=utf-8')
-  res.end(html)
 }
 
 class PrivateRpcError extends Error {
@@ -1297,6 +1270,8 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 class AppServerProcess {
   private process: ChildProcessWithoutNullStreams | null = null
   private initialized = false
+  private startPromise: Promise<void> | null = null
+  private initializePromise: Promise<void> | null = null
   private readBuffer = ''
   private nextId = 1
   private stopping = false
@@ -1315,205 +1290,46 @@ class AppServerProcess {
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   }
-  private publicBaseUrl: string | null = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL)
-  private readonly mobileAuthSessionStore = new MobileAuthSessionStore()
+  private readonly accountProfileStore = new AccountProfileStore()
+  private codexHomeOverride: string | null = null
 
   setVoiceInputFallbackConfig(config: VoiceInputFallbackConfig): void {
     this.voiceInputFallbackConfig = config
   }
 
-  setPublicBaseUrl(value: string | null | undefined): void {
-    this.publicBaseUrl = normalizePublicBaseUrl(value)
-  }
-
-  getPublicBaseUrl(): string | null {
-    return this.publicBaseUrl
-  }
-
-  withWebLocalConfigSnapshot(payload: unknown): unknown {
-    const record = asRecord(payload)
-    const config = asRecord(record?.config)
-    if (!record || !config) {
-      return payload
+  private getCurrentCodexHomeDir(): string | null {
+    if (this.codexHomeOverride && this.codexHomeOverride.trim().length > 0) {
+      return this.codexHomeOverride.trim()
     }
+    const configured = process.env.CODEX_HOME?.trim()
+    return configured && configured.length > 0 ? configured : null
+  }
 
+  private async ensureActiveProfileLoaded(): Promise<void> {
+    if (this.codexHomeOverride && this.codexHomeOverride.trim().length > 0) return
+    const snapshot = await this.accountProfileStore.list()
+    const active = snapshot.profiles.find((profile) => profile.id === snapshot.activeProfileId) ?? null
+    this.codexHomeOverride = active?.codexHomeDir ?? this.getCurrentCodexHomeDir()
+  }
+
+  async listAccountProfiles(): Promise<{ activeProfileId: string; profiles: AccountProfile[] }> {
+    const snapshot = await this.accountProfileStore.listVisible()
     return {
-      ...record,
-      config: {
-        ...config,
-        [WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY]: Boolean(this.publicBaseUrl),
-        [WEB_LOCAL_PUBLIC_BASE_URL_KEY]: this.publicBaseUrl,
-      },
+      activeProfileId: snapshot.activeProfileId,
+      profiles: snapshot.profiles,
     }
   }
 
-  async startMobileChatgptLogin(): Promise<MobileChatgptLoginStartResult> {
-    const publicBaseUrl = this.getPublicBaseUrl()
-    if (!publicBaseUrl) {
-      throw new Error('Mobile direct auth is unavailable because PUBLIC_BASE_URL is not configured')
-    }
-
-    const payload = asRecord(await this.rpc('account/login/start', { type: 'chatgpt' }))
-    if (payload?.type !== 'chatgpt') {
-      throw new Error('account/login/start did not return a ChatGPT login flow')
-    }
-
-    const authUrl = readText(payload.authUrl)
-    const appServerLoginId = readText(payload.loginId)
-    if (!authUrl || !appServerLoginId) {
-      throw new Error('account/login/start returned an incomplete ChatGPT login response')
-    }
-
-    const rewritten = rewriteAuthUrlForMobileCallback(authUrl, publicBaseUrl)
-    const session = this.mobileAuthSessionStore.create({
-      appServerLoginId,
-      state: rewritten.state,
-      originalCallbackUrl: rewritten.originalCallbackUrl,
-      publicBaseUrlSnapshot: publicBaseUrl,
-    })
-
-    return {
-      loginSessionId: session.loginSessionId,
-      authUrl: rewritten.authUrl,
-      expiresAt: session.expiresAt,
-    }
+  async createAccountProfile(name: string | null): Promise<AccountProfile> {
+    const profile = await this.accountProfileStore.create(name)
+    return profile
   }
 
-  getMobileChatgptLoginStatus(loginSessionId: string): MobileChatgptLoginStatusResult {
-    const normalizedLoginSessionId = loginSessionId.trim()
-    if (!normalizedLoginSessionId) {
-      throw new Error('Missing login session id')
-    }
-
-    const status = this.mobileAuthSessionStore.readStatus(normalizedLoginSessionId, this.getPublicBaseUrl())
-    if (!status) {
-      return {
-        loginSessionId: normalizedLoginSessionId,
-        status: 'server_restarted',
-        expiresAt: null,
-        error: null,
-      }
-    }
-
-    return status
-  }
-
-  async completeMobileChatgptCallback(callbackUrl: URL): Promise<{
-    ok: boolean
-    status: MobileAuthSessionStatus
-    message: string
-  }> {
-    const state = readText(callbackUrl.searchParams.get('state'))
-    if (!state) {
-      return {
-        ok: false,
-        status: 'failed',
-        message: 'ChatGPT callback is missing state',
-      }
-    }
-
-    const session = this.mobileAuthSessionStore.readByState(state)
-    if (!session) {
-      return {
-        ok: false,
-        status: 'server_restarted',
-        message: 'This login session is no longer available. Please restart the login flow.',
-      }
-    }
-
-    const status = this.mobileAuthSessionStore.readStatus(session.loginSessionId, this.getPublicBaseUrl())
-    if (!status) {
-      return {
-        ok: false,
-        status: 'server_restarted',
-        message: 'This login session is no longer available. Please restart the login flow.',
-      }
-    }
-    if (status.status === 'expired') {
-      return {
-        ok: false,
-        status: 'expired',
-        message: 'This login session has expired. Please restart the login flow.',
-      }
-    }
-    if (status.status === 'public_url_changed') {
-      return {
-        ok: false,
-        status: 'public_url_changed',
-        message: 'Public access URL changed during login. Please restart the login flow.',
-      }
-    }
-    if (status.status === 'success') {
-      return {
-        ok: true,
-        status: 'success',
-        message: 'ChatGPT login already completed. You can return to the account center.',
-      }
-    }
-    if (status.status === 'failed') {
-      return {
-        ok: false,
-        status: 'failed',
-        message: status.error ?? 'ChatGPT login did not complete',
-      }
-    }
-
-    const oauthError = readText(callbackUrl.searchParams.get('error'))
-    const oauthErrorDescription = readText(callbackUrl.searchParams.get('error_description'))
-    if (oauthError) {
-      const errorMessage = oauthErrorDescription || oauthError
-      this.mobileAuthSessionStore.markFailedByState(state, errorMessage)
-      return {
-        ok: false,
-        status: 'failed',
-        message: errorMessage,
-      }
-    }
-
-    const authCode = readText(callbackUrl.searchParams.get('code'))
-    if (!authCode) {
-      const message = 'ChatGPT callback is missing code'
-      this.mobileAuthSessionStore.markFailedByState(state, message)
-      return {
-        ok: false,
-        status: 'failed',
-        message,
-      }
-    }
-
-    const relayUrl = buildMobileAuthRelayUrl(session.originalCallbackUrl, callbackUrl)
-    let relayResponse: Response
-    try {
-      relayResponse = await fetch(relayUrl, {
-        method: 'GET',
-        redirect: 'manual',
-      })
-    } catch (error) {
-      const message = getErrorMessage(error, 'Failed to relay ChatGPT callback to the local host')
-      this.mobileAuthSessionStore.markFailedByState(state, message)
-      return {
-        ok: false,
-        status: 'failed',
-        message,
-      }
-    }
-
-    if (!relayResponse.ok && relayResponse.status !== 302 && relayResponse.status !== 303) {
-      const message = `Local ChatGPT callback returned HTTP ${String(relayResponse.status)}`
-      this.mobileAuthSessionStore.markFailedByState(state, message)
-      return {
-        ok: false,
-        status: 'failed',
-        message,
-      }
-    }
-
-    this.mobileAuthSessionStore.markSuccessByState(state)
-    return {
-      ok: true,
-      status: 'success',
-      message: 'ChatGPT login completed. You can return to the account center.',
-    }
+  async switchAccountProfile(profileId: string): Promise<AccountProfile> {
+    this.dispose()
+    const profile = await this.accountProfileStore.setActive(profileId)
+    this.codexHomeOverride = profile.codexHomeDir
+    return profile
   }
 
   private getTranscriptionService() {
@@ -1652,47 +1468,70 @@ class AppServerProcess {
     return PRIVATE_RPC_NOT_HANDLED
   }
 
-  private start(): void {
+  private async start(): Promise<void> {
     if (this.process) return
+    if (this.startPromise) {
+      await this.startPromise
+      return
+    }
 
-    this.stopping = false
-    const proc = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
-    this.process = proc
+    this.startPromise = (async () => {
+      this.stopping = false
+      await this.ensureActiveProfileLoaded()
+      const codexHomeDir = this.getCurrentCodexHomeDir()
+      const proc = spawn('codex', ['app-server'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: codexHomeDir
+          ? {
+              ...process.env,
+              CODEX_HOME: codexHomeDir,
+            }
+          : process.env,
+      })
+      this.process = proc
 
-    proc.stdout.setEncoding('utf8')
-    proc.stdout.on('data', (chunk: string) => {
-      this.readBuffer += chunk
+      proc.stdout.setEncoding('utf8')
+      proc.stdout.on('data', (chunk: string) => {
+        this.readBuffer += chunk
 
-      let lineEnd = this.readBuffer.indexOf('\n')
-      while (lineEnd !== -1) {
-        const line = this.readBuffer.slice(0, lineEnd).trim()
-        this.readBuffer = this.readBuffer.slice(lineEnd + 1)
+        let lineEnd = this.readBuffer.indexOf('\n')
+        while (lineEnd !== -1) {
+          const line = this.readBuffer.slice(0, lineEnd).trim()
+          this.readBuffer = this.readBuffer.slice(lineEnd + 1)
 
-        if (line.length > 0) {
-          this.handleLine(line)
+          if (line.length > 0) {
+            this.handleLine(line)
+          }
+
+          lineEnd = this.readBuffer.indexOf('\n')
+        }
+      })
+
+      proc.stderr.setEncoding('utf8')
+      proc.stderr.on('data', () => {
+        // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
+      })
+
+      proc.on('exit', () => {
+        const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
+        for (const request of this.pending.values()) {
+          request.reject(failure)
         }
 
-        lineEnd = this.readBuffer.indexOf('\n')
-      }
-    })
+        this.pending.clear()
+        this.pendingServerRequests.clear()
+        this.process = null
+        this.initialized = false
+        this.initializePromise = null
+        this.readBuffer = ''
+      })
+    })()
 
-    proc.stderr.setEncoding('utf8')
-    proc.stderr.on('data', () => {
-      // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
-    })
-
-    proc.on('exit', () => {
-      const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
-      for (const request of this.pending.values()) {
-        request.reject(failure)
-      }
-
-      this.pending.clear()
-      this.pendingServerRequests.clear()
-      this.process = null
-      this.initialized = false
-      this.readBuffer = ''
-    })
+    try {
+      await this.startPromise
+    } finally {
+      this.startPromise = null
+    }
   }
 
   private sendLine(payload: Record<string, unknown>): void {
@@ -2281,7 +2120,7 @@ class AppServerProcess {
   }
 
   private async call(method: string, params: unknown): Promise<unknown> {
-    this.start()
+    await this.start()
     const id = this.nextId++
 
     return new Promise((resolve, reject) => {
@@ -2298,15 +2137,26 @@ class AppServerProcess {
 
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return
+    if (this.initializePromise) {
+      await this.initializePromise
+      return
+    }
 
-    await this.call('initialize', {
-      clientInfo: {
-        name: 'codex-web-local',
-        version: '0.1.0',
-      },
-    })
+    this.initializePromise = (async () => {
+      await this.call('initialize', {
+        clientInfo: {
+          name: 'codex-web-local',
+          version: '0.1.0',
+        },
+      })
+      this.initialized = true
+    })()
 
-    this.initialized = true
+    try {
+      await this.initializePromise
+    } finally {
+      this.initializePromise = null
+    }
   }
 
   async rpc(method: string, params: unknown): Promise<unknown> {
@@ -2471,6 +2321,8 @@ class AppServerProcess {
     this.stopping = true
     this.process = null
     this.initialized = false
+    this.startPromise = null
+    this.initializePromise = null
     this.readBuffer = ''
 
     const failure = new Error('codex app-server stopped')
@@ -2643,16 +2495,13 @@ function getSharedBridgeState(): SharedBridgeState {
   return created
 }
 
-export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig; publicBaseUrl?: string | null } = {}): CodexBridgeMiddleware {
+export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig } = {}): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
   appServer.setVoiceInputFallbackConfig(options.voiceInputFallback ?? {
     provider: 'openai',
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   })
-  if (Object.prototype.hasOwnProperty.call(options, 'publicBaseUrl')) {
-    appServer.setPublicBaseUrl(options.publicBaseUrl)
-  }
 
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {
@@ -2677,10 +2526,7 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
           : undefined
 
         try {
-          const rawResult = await appServer.rpc(body.method, params)
-          const result = body.method === 'config/read'
-            ? appServer.withWebLocalConfigSnapshot(rawResult)
-            : rawResult
+          const result = await appServer.rpc(body.method, params)
           appServer.triggerSharedSessionSnapshotSync(readThreadIdFromRpcPayload(body.method, params, result))
           setJson(res, 200, { result })
           return
@@ -2700,38 +2546,34 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
         return
       }
 
-      if (req.method === 'POST' && url.pathname === '/api/auth/chatgpt/mobile/start') {
-        const result = await appServer.startMobileChatgptLogin()
-        setJson(res, 200, result)
+      if (req.method === 'GET' && url.pathname === '/codex-api/account-profiles') {
+        setJson(res, 200, { data: await appServer.listAccountProfiles() })
         return
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/auth/chatgpt/mobile/status') {
-        const loginSessionId = readText(url.searchParams.get('id'))
-        if (!loginSessionId) {
-          setJson(res, 400, { error: 'Missing query parameter: id' })
+      if (req.method === 'POST' && url.pathname === '/codex-api/account-profiles') {
+        const payload = asRecord(await readJsonBody(req))
+        const name = readText(payload?.name)
+        try {
+          setJson(res, 200, { data: await appServer.createAccountProfile(name || null) })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, 'Failed to create account profile') })
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/account-profiles/switch') {
+        const payload = asRecord(await readJsonBody(req))
+        const profileId = readText(payload?.profileId)
+        if (!profileId) {
+          setJson(res, 400, { error: 'Missing body field: profileId' })
           return
         }
-        setJson(res, 200, appServer.getMobileChatgptLoginStatus(loginSessionId))
-        return
-      }
-
-      if (req.method === 'GET' && url.pathname === '/auth/chatgpt/callback') {
-        const result = await appServer.completeMobileChatgptCallback(url)
-        setHtml(
-          res,
-          result.ok ? 200 : 400,
-          [
-            '<!doctype html>',
-            '<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-            `<title>${result.ok ? 'ChatGPT login completed' : 'ChatGPT login failed'}</title>`,
-            '</head><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:24px;line-height:1.6;">',
-            `<h1>${result.ok ? 'ChatGPT login completed' : 'ChatGPT login failed'}</h1>`,
-            `<p>${result.message}</p>`,
-            '<p>You can return to the Codex account center now.</p>',
-            '</body></html>',
-          ].join(''),
-        )
+        try {
+          setJson(res, 200, { data: await appServer.switchAccountProfile(profileId) })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, 'Failed to switch account profile') })
+        }
         return
       }
 

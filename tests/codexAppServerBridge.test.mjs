@@ -182,6 +182,46 @@ async function withFreshBridge(fn) {
   }
 }
 
+test('concurrent ensureInitialized calls only initialize once', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const originalCall = appServer.call
+    const originalInitialized = appServer.initialized
+    const originalInitializePromise = appServer.initializePromise
+
+    let initializeCount = 0
+    appServer.initialized = false
+    appServer.initializePromise = null
+    appServer.call = async (method) => {
+      if (method !== 'initialize') {
+        return {}
+      }
+      initializeCount += 1
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      if (initializeCount > 1) {
+        throw new Error('Already initialized')
+      }
+      return {}
+    }
+
+    try {
+      await Promise.all([
+        appServer.ensureInitialized(),
+        appServer.ensureInitialized(),
+        appServer.ensureInitialized(),
+      ])
+      assert.equal(initializeCount, 1)
+      assert.equal(appServer.initialized, true)
+    } finally {
+      appServer.call = originalCall
+      appServer.initialized = originalInitialized
+      appServer.initializePromise = originalInitializePromise
+    }
+  })
+})
+
 test('git push status reports upstream metadata and push succeeds', async () => {
   const { rootDir, repoDir } = await createBareRemoteWorkspace()
 
