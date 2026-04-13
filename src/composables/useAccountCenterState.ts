@@ -1,16 +1,17 @@
 import { computed, ref } from 'vue'
 import {
   cancelAccountLogin,
-  getMobileChatgptLoginStatus,
+  createAccountProfile,
   getAccountRateLimitSnapshot,
   getAccountStatus,
+  listAccountProfiles,
   logoutAccount,
   openUrlInHostBrowser,
   readCodexConfig,
   refreshAccountStatus,
-  startMobileChatgptLogin,
   startAccountLogin,
   subscribeCodexNotifications,
+  switchAccountProfile,
   type AccountRateLimitSnapshot,
   type RpcNotification,
 } from '../api/codexGateway'
@@ -19,6 +20,7 @@ import type {
   UiAccountAuthMode,
   UiAccountCenterView,
   UiAccountLoginFlow,
+  UiAccountProfile,
   UiAccountStatus,
   UiForcedLoginMethod,
 } from '../types/codex'
@@ -69,19 +71,21 @@ function isLoopbackUrl(value: string): boolean {
   }
 }
 
+const MOBILE_MEDIA_QUERY = '(max-width: 720px)'
+
 const accountStatus = ref<UiAccountStatus>('loading')
 const currentAccount = ref<UiAccount | null>(null)
 const authMode = ref<UiAccountAuthMode | null>(null)
 const requiresOpenaiAuth = ref(false)
 const rateLimitSnapshot = ref<AccountRateLimitSnapshot | null>(null)
 const forcedLoginMethod = ref<UiForcedLoginMethod | null>(null)
-const mobileDirectAuthAvailable = ref(false)
-const publicBaseUrl = ref('')
+const accountProfiles = ref<UiAccountProfile[]>([])
+const activeProfileId = ref('')
+const isMobileClient = ref(false)
 const accountCenterOpen = ref(false)
 const accountCenterView = ref<UiAccountCenterView>('overview')
 const loginFlow = ref<UiAccountLoginFlow>('idle')
 const activeLoginId = ref('')
-const activeMobileLoginSessionId = ref('')
 const pendingAuthUrl = ref('')
 const apiKeyDraft = ref('')
 const error = ref('')
@@ -89,63 +93,47 @@ const isBootstrapping = ref(false)
 const isSubmitting = ref(false)
 
 let stopNotificationStream: (() => void) | null = null
-let mobileLoginPollTimer: ReturnType<typeof setTimeout> | null = null
+let stopMobileMediaQueryListener: (() => void) | null = null
 
-function stopMobileLoginPolling(): void {
-  if (!mobileLoginPollTimer) return
-  clearTimeout(mobileLoginPollTimer)
-  mobileLoginPollTimer = null
+function applyMobileClientState(matches: boolean): void {
+  isMobileClient.value = matches
+}
+
+function setupMobileClientDetector(): void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    applyMobileClientState(false)
+    return
+  }
+  const mediaQuery = window.matchMedia(MOBILE_MEDIA_QUERY)
+  applyMobileClientState(mediaQuery.matches)
+
+  const listener = (event: MediaQueryListEvent) => {
+    applyMobileClientState(event.matches)
+  }
+  if (typeof mediaQuery.addEventListener === 'function') {
+    mediaQuery.addEventListener('change', listener)
+    stopMobileMediaQueryListener = () => mediaQuery.removeEventListener('change', listener)
+    return
+  }
+
+  mediaQuery.addListener(listener)
+  stopMobileMediaQueryListener = () => mediaQuery.removeListener(listener)
+}
+
+function teardownMobileClientDetector(): void {
+  stopMobileMediaQueryListener?.()
+  stopMobileMediaQueryListener = null
 }
 
 function clearPendingLoginState(): void {
-  stopMobileLoginPolling()
   activeLoginId.value = ''
-  activeMobileLoginSessionId.value = ''
   pendingAuthUrl.value = ''
 }
 
 function setLoginFailure(message: string): void {
-  stopMobileLoginPolling()
   loginFlow.value = 'failed'
   accountCenterView.value = 'login_progress'
   error.value = message
-}
-
-function mapMobileDirectAuthError(status: 'failed' | 'expired' | 'public_url_changed' | 'server_restarted', fallback: string | null): string {
-  if (fallback && fallback.trim().length > 0) return fallback.trim()
-  if (status === 'expired') return 'ChatGPT login expired. Please try again.'
-  if (status === 'public_url_changed') return 'Public access URL changed. Please restart ChatGPT login.'
-  if (status === 'server_restarted') return 'The local auth relay restarted. Please start ChatGPT login again.'
-  return 'ChatGPT login did not complete'
-}
-
-async function pollMobileLoginStatus(): Promise<void> {
-  const loginSessionId = activeMobileLoginSessionId.value.trim()
-  if (!loginSessionId) return
-
-  try {
-    const status = await getMobileChatgptLoginStatus(loginSessionId)
-    if (activeMobileLoginSessionId.value !== loginSessionId) {
-      return
-    }
-
-    if (status.status === 'pending') {
-      mobileLoginPollTimer = setTimeout(() => {
-        void pollMobileLoginStatus()
-      }, 1500)
-      return
-    }
-
-    if (status.status === 'success') {
-      stopMobileLoginPolling()
-      await refreshBootstrap({ refreshToken: true })
-      return
-    }
-
-    setLoginFailure(mapMobileDirectAuthError(status.status, status.error))
-  } catch (unknownError) {
-    setLoginFailure(unknownError instanceof Error ? unknownError.message : 'Failed to monitor ChatGPT login')
-  }
 }
 
 async function refreshRateLimits(): Promise<void> {
@@ -154,6 +142,12 @@ async function refreshRateLimits(): Promise<void> {
   } catch {
     // Keep the last usable snapshot when rate-limit RPC is temporarily unavailable.
   }
+}
+
+async function refreshAccountProfiles(): Promise<void> {
+  const snapshot = await listAccountProfiles()
+  activeProfileId.value = snapshot.activeProfileId
+  accountProfiles.value = snapshot.profiles
 }
 
 async function refreshAccountSnapshot(options: {
@@ -211,14 +205,13 @@ async function refreshBootstrap(options: {
     const [accountSnapshot, configSnapshot] = await Promise.all([
       accountReader(),
       readCodexConfig(),
+      refreshAccountProfiles(),
     ])
 
     currentAccount.value = accountSnapshot.account
     requiresOpenaiAuth.value = accountSnapshot.requiresOpenaiAuth
     authMode.value = accountSnapshot.authMode
     forcedLoginMethod.value = configSnapshot.forcedLoginMethod
-    mobileDirectAuthAvailable.value = configSnapshot.mobileDirectAuthAvailable
-    publicBaseUrl.value = configSnapshot.publicBaseUrl ?? ''
 
     if (accountSnapshot.account) {
       await refreshRateLimits()
@@ -293,12 +286,24 @@ function showAccountOverview(): void {
 }
 
 function showLoginMethods(): void {
+  if (isMobileClient.value) {
+    accountCenterView.value = 'overview'
+    loginFlow.value = 'idle'
+    error.value = '手机端不支持授权登录，请在电脑端新增并登录账号。'
+    return
+  }
   accountCenterView.value = 'login_methods'
   loginFlow.value = 'selecting_method'
   error.value = ''
 }
 
 function showApiKeyForm(): void {
+  if (isMobileClient.value) {
+    accountCenterView.value = 'overview'
+    loginFlow.value = 'idle'
+    error.value = '手机端不支持授权登录，请在电脑端新增并登录账号。'
+    return
+  }
   accountCenterView.value = 'login_methods'
   loginFlow.value = 'api_key_form'
   error.value = ''
@@ -307,44 +312,34 @@ function showApiKeyForm(): void {
 async function startHostBrowserChatgptLogin(): Promise<void> {
   const result = await startAccountLogin({ type: 'chatgpt' })
   activeLoginId.value = result.loginId ?? ''
-  activeMobileLoginSessionId.value = ''
   pendingAuthUrl.value = result.authUrl ?? ''
   loginFlow.value = 'waiting_completion'
   await openPendingAuthPage()
 }
 
-async function beginChatgptLogin(): Promise<void> {
+async function createAndSwitchAccountProfile(name: string | null = null): Promise<UiAccountProfile> {
+  const created = await createAccountProfile(name)
+  await switchAccountProfile(created.id)
+  await refreshBootstrap({ refreshToken: false, preserveLoginFlow: true, silent: true })
+  return created
+}
+
+async function beginChatgptLogin(options: { createNewProfile?: boolean } = {}): Promise<void> {
+  if (isMobileClient.value) {
+    showAccountOverview()
+    error.value = '手机端不支持授权登录，请在电脑端新增并登录账号。'
+    return
+  }
+
   error.value = ''
   isSubmitting.value = true
   loginFlow.value = 'opening_oauth'
   accountCenterView.value = 'login_progress'
 
   try {
-    if (mobileDirectAuthAvailable.value) {
-      try {
-        const result = await startMobileChatgptLogin()
-        activeLoginId.value = ''
-        activeMobileLoginSessionId.value = result.loginSessionId
-        pendingAuthUrl.value = result.authUrl
-        loginFlow.value = 'waiting_completion'
-        await openPendingAuthPage()
-        stopMobileLoginPolling()
-        mobileLoginPollTimer = setTimeout(() => {
-          void pollMobileLoginStatus()
-        }, 1500)
-        return
-      } catch (mobileError) {
-        // Keep login available when direct mobile auth prep fails unexpectedly.
-        clearPendingLoginState()
-        console.warn(
-          '[account-center] Mobile direct auth failed; falling back to host-browser ChatGPT login.',
-          mobileError,
-        )
-        await startHostBrowserChatgptLogin()
-        return
-      }
+    if (options.createNewProfile === true) {
+      await createAndSwitchAccountProfile(null)
     }
-
     await startHostBrowserChatgptLogin()
   } catch (unknownError) {
     loginFlow.value = 'failed'
@@ -355,6 +350,12 @@ async function beginChatgptLogin(): Promise<void> {
 }
 
 async function submitApiKeyLogin(apiKey: string = apiKeyDraft.value): Promise<void> {
+  if (isMobileClient.value) {
+    showAccountOverview()
+    error.value = '手机端不支持授权登录，请在电脑端新增并登录账号。'
+    return
+  }
+
   const normalizedApiKey = apiKey.trim()
   if (!normalizedApiKey) {
     error.value = 'API Key is required'
@@ -378,6 +379,27 @@ async function submitApiKeyLogin(apiKey: string = apiKeyDraft.value): Promise<vo
   } catch (unknownError) {
     error.value = unknownError instanceof Error ? unknownError.message : 'Failed to login with API Key'
     loginFlow.value = 'api_key_form'
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+async function switchToAccountProfile(profileId: string): Promise<void> {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId || normalizedProfileId === activeProfileId.value) {
+    return
+  }
+
+  isSubmitting.value = true
+  error.value = ''
+  try {
+    await switchAccountProfile(normalizedProfileId)
+    clearPendingLoginState()
+    await refreshBootstrap({ refreshToken: true })
+    accountCenterView.value = 'overview'
+    loginFlow.value = 'idle'
+  } catch (unknownError) {
+    error.value = unknownError instanceof Error ? unknownError.message : 'Failed to switch account profile'
   } finally {
     isSubmitting.value = false
   }
@@ -437,7 +459,6 @@ function handleNotification(notification: RpcNotification): void {
       return
     }
     if (completed.success) {
-      stopMobileLoginPolling()
       void refreshBootstrap({ refreshToken: true })
     } else {
       setLoginFailure(completed.error ?? 'Login did not complete')
@@ -452,6 +473,7 @@ function handleNotification(notification: RpcNotification): void {
 
 function startAccountCenterState(): void {
   if (stopNotificationStream) return
+  setupMobileClientDetector()
   stopNotificationStream = subscribeCodexNotifications((notification) => {
     handleNotification(notification)
   })
@@ -459,13 +481,14 @@ function startAccountCenterState(): void {
 }
 
 function stopAccountCenterState(): void {
-  stopMobileLoginPolling()
+  teardownMobileClientDetector()
   if (!stopNotificationStream) return
   stopNotificationStream()
   stopNotificationStream = null
 }
 
 const availableLoginMethods = computed<Array<'chatgpt' | 'apiKey'>>(() => {
+  if (isMobileClient.value) return []
   if (forcedLoginMethod.value === 'chatgpt') return ['chatgpt']
   if (forcedLoginMethod.value === 'apiKey') return ['apiKey']
   return ['chatgpt', 'apiKey']
@@ -481,8 +504,9 @@ export function useAccountCenterState() {
     requiresOpenaiAuth,
     rateLimitSnapshot,
     forcedLoginMethod,
-    mobileDirectAuthAvailable,
-    publicBaseUrl,
+    accountProfiles,
+    activeProfileId,
+    isMobileClient,
     availableLoginMethods,
     opensAuthOnHostBrowser,
     accountCenterOpen,
@@ -500,6 +524,8 @@ export function useAccountCenterState() {
     showLoginMethods,
     showApiKeyForm,
     beginChatgptLogin,
+    createAndSwitchAccountProfile,
+    switchToAccountProfile,
     submitApiKeyLogin,
     cancelPendingLogin,
     openPendingAuthPageOnHost,

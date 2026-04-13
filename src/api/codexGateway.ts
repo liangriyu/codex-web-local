@@ -41,10 +41,10 @@ import {
 import type {
   UiAccount,
   UiAccountAuthMode,
+  UiAccountProfile,
+  UiAccountProfilesSnapshot,
   UiAccountLoginRequest,
   UiAccountLoginStartResult,
-  UiMobileChatgptLoginStartResult,
-  UiMobileChatgptLoginStatusResult,
   UiAccountSnapshot,
   UiCodexConfigSnapshot,
   UiForcedLoginMethod,
@@ -127,21 +127,9 @@ type FetchJsonOptions = {
   signal?: AbortSignal
 }
 
-type MobileChatgptLoginStartResponse = {
-  loginSessionId?: unknown
-  authUrl?: unknown
-  expiresAt?: unknown
+type AccountProfilesResponse = {
+  data?: unknown
 }
-
-type MobileChatgptLoginStatusResponse = {
-  loginSessionId?: unknown
-  status?: unknown
-  expiresAt?: unknown
-  error?: unknown
-}
-
-const WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY = 'codex_web_local_mobile_direct_auth_available'
-const WEB_LOCAL_PUBLIC_BASE_URL_KEY = 'codex_web_local_public_base_url'
 
 const EMPTY_WORKSPACE_DIRTY_SUMMARY: UiWorkspaceDirtySummary = {
   trackedModified: 0,
@@ -255,6 +243,49 @@ function normalizeAccountSnapshot(
     account,
     authMode: normalizeAccountAuthMode(fallbackAuthMode) ?? (account?.type ?? null),
     requiresOpenaiAuth: payload.requiresOpenaiAuth === true,
+  }
+}
+
+function normalizeAccountProfile(value: unknown): UiAccountProfile | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const id = typeof row.id === 'string' ? row.id.trim() : ''
+  const name = typeof row.name === 'string' ? row.name.trim() : ''
+  const codexHomeDir = typeof row.codexHomeDir === 'string' ? row.codexHomeDir.trim() : ''
+  const createdAt = typeof row.createdAt === 'string' ? row.createdAt.trim() : ''
+  const updatedAt = typeof row.updatedAt === 'string' ? row.updatedAt.trim() : ''
+  if (!id || !name || !codexHomeDir || !createdAt || !updatedAt) return null
+  return {
+    id,
+    name,
+    codexHomeDir,
+    createdAt,
+    updatedAt,
+    lastUsedAt: typeof row.lastUsedAt === 'string' && row.lastUsedAt.trim().length > 0
+      ? row.lastUsedAt.trim()
+      : null,
+  }
+}
+
+function normalizeAccountProfilesSnapshot(payload: unknown): UiAccountProfilesSnapshot {
+  const row = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {}
+  const profiles = (Array.isArray(row.profiles) ? row.profiles : [])
+    .map((profile) => normalizeAccountProfile(profile))
+    .filter((profile): profile is UiAccountProfile => profile !== null)
+  const activeProfileIdCandidate = typeof row.activeProfileId === 'string'
+    ? row.activeProfileId.trim()
+    : ''
+  const activeProfileId = activeProfileIdCandidate && profiles.some((profile) => profile.id === activeProfileIdCandidate)
+    ? activeProfileIdCandidate
+    : (profiles[0]?.id ?? '')
+  if (!activeProfileId) {
+    throw new Error('No available account profile')
+  }
+  return {
+    activeProfileId,
+    profiles,
   }
 }
 
@@ -1131,14 +1162,8 @@ export async function readCodexConfig(): Promise<UiCodexConfigSnapshot> {
   const payload = await callRpc<ConfigReadResponse>('config/read', {
     includeLayers: false,
   })
-  const configRecord = payload.config as Record<string, unknown>
   return {
     forcedLoginMethod: normalizeForcedLoginMethod(payload.config.forced_login_method),
-    mobileDirectAuthAvailable: configRecord[WEB_LOCAL_MOBILE_DIRECT_AUTH_AVAILABLE_KEY] === true,
-    publicBaseUrl: typeof configRecord[WEB_LOCAL_PUBLIC_BASE_URL_KEY] === 'string'
-      && configRecord[WEB_LOCAL_PUBLIC_BASE_URL_KEY].trim().length > 0
-      ? configRecord[WEB_LOCAL_PUBLIC_BASE_URL_KEY].trim()
-      : null,
   }
 }
 
@@ -1197,52 +1222,51 @@ export async function openUrlInHostBrowser(url: string): Promise<boolean> {
   return payload.opened === true
 }
 
-export async function startMobileChatgptLogin(): Promise<UiMobileChatgptLoginStartResult> {
-  const payload = await fetchJson<MobileChatgptLoginStartResponse>(
-    '/api/auth/chatgpt/mobile/start',
-    'Failed to start mobile ChatGPT login',
-    'POST /api/auth/chatgpt/mobile/start',
-    {
-      method: 'POST',
-      body: {},
-    },
+export async function listAccountProfiles(): Promise<UiAccountProfilesSnapshot> {
+  const payload = await fetchJson<AccountProfilesResponse>(
+    '/codex-api/account-profiles',
+    'Failed to list account profiles',
+    'GET /codex-api/account-profiles',
   )
-
-  if (
-    typeof payload.loginSessionId !== 'string'
-    || typeof payload.authUrl !== 'string'
-    || typeof payload.expiresAt !== 'string'
-  ) {
-    throw new Error('Mobile ChatGPT login start returned an invalid payload')
-  }
-
-  return {
-    loginSessionId: payload.loginSessionId,
-    authUrl: payload.authUrl,
-    expiresAt: payload.expiresAt,
-  }
+  return normalizeAccountProfilesSnapshot(payload.data)
 }
 
-export async function getMobileChatgptLoginStatus(loginSessionId: string): Promise<UiMobileChatgptLoginStatusResult> {
-  const normalizedLoginSessionId = loginSessionId.trim()
-  if (!normalizedLoginSessionId) {
-    throw new Error('Mobile login session id is required')
-  }
-
-  const payload = await fetchJson<MobileChatgptLoginStatusResponse>(
-    `/api/auth/chatgpt/mobile/status?id=${encodeURIComponent(normalizedLoginSessionId)}`,
-    'Failed to read mobile ChatGPT login status',
-    'GET /api/auth/chatgpt/mobile/status',
+export async function createAccountProfile(name: string | null): Promise<UiAccountProfile> {
+  const payload = await fetchJson<AccountProfilesResponse>(
+    '/codex-api/account-profiles',
+    'Failed to create account profile',
+    'POST /codex-api/account-profiles',
+    {
+      method: 'POST',
+      body: { name: name?.trim() || null },
+    },
   )
-
-  return {
-    loginSessionId: typeof payload.loginSessionId === 'string' ? payload.loginSessionId : normalizedLoginSessionId,
-    status: typeof payload.status === 'string'
-      ? payload.status as UiMobileChatgptLoginStatusResult['status']
-      : 'server_restarted',
-    expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : null,
-    error: typeof payload.error === 'string' && payload.error.trim().length > 0 ? payload.error.trim() : null,
+  const profile = normalizeAccountProfile(payload.data)
+  if (!profile) {
+    throw new Error('Create account profile returned an invalid payload')
   }
+  return profile
+}
+
+export async function switchAccountProfile(profileId: string): Promise<UiAccountProfile> {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId) {
+    throw new Error('Profile id is required')
+  }
+  const payload = await fetchJson<AccountProfilesResponse>(
+    '/codex-api/account-profiles/switch',
+    'Failed to switch account profile',
+    'POST /codex-api/account-profiles/switch',
+    {
+      method: 'POST',
+      body: { profileId: normalizedProfileId },
+    },
+  )
+  const profile = normalizeAccountProfile(payload.data)
+  if (!profile) {
+    throw new Error('Switch account profile returned an invalid payload')
+  }
+  return profile
 }
 
 function normalizeUsedPercent(value: unknown): number | null {

@@ -1,12 +1,9 @@
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { createCodexBridgeMiddleware } from "./src/server/codexAppServerBridge";
 import tailwindcss from "@tailwindcss/vite";
 
-export default defineConfig(({ mode } = { mode: "development" }) => {
-  const env = loadEnv(mode, process.cwd(), "");
-  const publicBaseUrl = env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL;
-
+export default defineConfig(() => {
   return {
     server: {
       port: 5173,
@@ -18,9 +15,7 @@ export default defineConfig(({ mode } = { mode: "development" }) => {
       {
         name: "codex-bridge",
         configureServer(server) {
-          const bridge = createCodexBridgeMiddleware({
-            publicBaseUrl,
-          });
+          const bridge = createCodexBridgeMiddleware();
           server.middlewares.use(bridge);
           server.httpServer?.once("close", () => {
             bridge.dispose();

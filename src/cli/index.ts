@@ -84,7 +84,6 @@ if (runtimeConfig.daemon) {
 const { app, dispose } = createApp({
   password,
   voiceInputFallback: runtimeConfig.voiceInputFallback,
-  publicBaseUrl: runtimeConfig.publicBaseUrl,
 })
 const server = runtimeConfig.https
   ? createHttpsServer({

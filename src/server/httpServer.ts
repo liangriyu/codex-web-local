@@ -12,7 +12,6 @@ const distDir = join(__dirname, '..', 'dist')
 export type ServerOptions = {
   password?: string
   voiceInputFallback?: VoiceInputFallbackConfig
-  publicBaseUrl?: string
 }
 
 export type ServerInstance = {
@@ -28,7 +27,6 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
       enabled: false,
       model: 'gpt-4o-mini-transcribe',
     },
-    publicBaseUrl: options.publicBaseUrl,
   })
 
   // Enable gzip/br compression by default, except SSE streams.

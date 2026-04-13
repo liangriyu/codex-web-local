@@ -142,31 +142,22 @@ export type UiAccountLoginStartResult = {
   authUrl: string | null
 }
 
-export type UiMobileChatgptLoginStartResult = {
-  loginSessionId: string
-  authUrl: string
-  expiresAt: string
+export type UiAccountProfile = {
+  id: string
+  name: string
+  codexHomeDir: string
+  createdAt: string
+  updatedAt: string
+  lastUsedAt: string | null
 }
 
-export type UiMobileChatgptLoginStatus =
-  | 'pending'
-  | 'success'
-  | 'failed'
-  | 'expired'
-  | 'public_url_changed'
-  | 'server_restarted'
-
-export type UiMobileChatgptLoginStatusResult = {
-  loginSessionId: string
-  status: UiMobileChatgptLoginStatus
-  expiresAt: string | null
-  error: string | null
+export type UiAccountProfilesSnapshot = {
+  activeProfileId: string
+  profiles: UiAccountProfile[]
 }
 
 export type UiCodexConfigSnapshot = {
   forcedLoginMethod: UiForcedLoginMethod | null
-  mobileDirectAuthAvailable: boolean
-  publicBaseUrl: string | null
 }
 
 export type UiMessage = {

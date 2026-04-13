@@ -41,3 +41,11 @@
 - `codex-web-local` 可在 bridge 层实现私有 RPC 扩展。
 - 私有 RPC 应记录在本目录，但不得误写入 `documentation/app-server-schemas/`。
 - 只有当私有能力准备上游化时，才需要进入正式 schema 流程。
+
+## Bridge 私有 HTTP 约定（账号中心）
+
+- 账号档案（profile）管理接口：
+  - `GET /codex-api/account-profiles`
+  - `POST /codex-api/account-profiles`
+  - `POST /codex-api/account-profiles/switch`
+- 2026-04-12 起，手机端 ChatGPT 直登 relay 接口已移除（不再提供 `/api/auth/chatgpt/mobile/*` 与 `/auth/chatgpt/callback`）。

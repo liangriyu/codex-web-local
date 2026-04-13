@@ -298,6 +298,9 @@
     :account="currentAccount"
     :requires-openai-auth="requiresOpenaiAuth"
     :rate-limit-snapshot="accountRateLimitSnapshot"
+    :account-profiles="accountProfiles"
+    :active-profile-id="activeProfileId"
+    :is-mobile-client="isMobileClient"
     :available-methods="availableLoginMethods"
     :view="accountCenterView"
     :login-flow="loginFlow"
@@ -312,6 +315,8 @@
     @show-methods="onShowAccountLoginMethods"
     @show-api-key-form="onShowApiKeyForm"
     @start-chatgpt-login="onStartChatgptLogin"
+    @start-chatgpt-login-new-profile="onStartChatgptLoginNewProfile"
+    @switch-profile="onSwitchAccountProfile"
     @update-api-key="onUpdateAccountApiKey"
     @submit-api-key="onSubmitAccountApiKey"
     @cancel-login="onCancelAccountLogin"
@@ -436,6 +441,9 @@ const {
   authMode,
   requiresOpenaiAuth,
   rateLimitSnapshot: accountRateLimitSnapshot,
+  accountProfiles,
+  activeProfileId,
+  isMobileClient,
   availableLoginMethods,
   opensAuthOnHostBrowser,
   accountCenterOpen,
@@ -452,6 +460,7 @@ const {
   showLoginMethods,
   showApiKeyForm,
   beginChatgptLogin,
+  switchToAccountProfile,
   submitApiKeyLogin,
   cancelPendingLogin,
   openPendingAuthPage,
@@ -782,6 +791,14 @@ function onUpdateAccountApiKey(value: string): void {
 
 function onStartChatgptLogin(): void {
   void beginChatgptLogin()
+}
+
+function onStartChatgptLoginNewProfile(): void {
+  void beginChatgptLogin({ createNewProfile: true })
+}
+
+function onSwitchAccountProfile(profileId: string): void {
+  void switchToAccountProfile(profileId)
 }
 
 function onSubmitAccountApiKey(): void {

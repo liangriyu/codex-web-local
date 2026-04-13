@@ -69,9 +69,6 @@ codex-web-local \
   --https-cert ./certs/dev.pem \
   --https-key ./certs/dev-key.pem
 
-# 启用手机端独立 ChatGPT 授权
-PUBLIC_BASE_URL=https://codex.landycode.online \
-codex-web-local --host 0.0.0.0 --port 3000
 ```
 
 ### 开发命令（Vite）
@@ -86,24 +83,20 @@ npm run dev -- --host "$(tailscale ip -4)"
 # 开发模式后台运行
 npm run dev -- --host 0.0.0.0 --daemon
 
-# 开发模式 + 手机端独立 ChatGPT 授权
-PUBLIC_BASE_URL=https://codex.landycode.online \
-npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
 默认开启密码保护时，服务会在控制台打印密码。浏览器打开 URL 后输入密码即可访问。
 
 这里的 Web 访问密码只负责保护 `codex-web-local` 站点入口；界面里的“账号中心”管理的是底层 OpenAI / Codex 账号，两者是两套独立鉴权。
 
-## 手机端 ChatGPT 直登
+## 账号中心：电脑端登录，手机端切换
 
-- 设置 `PUBLIC_BASE_URL` 后，账号中心会优先走“当前手机浏览器内完成授权”的直登链路。
-- `PUBLIC_BASE_URL` 必须是手机可访问的绝对 `https://` 地址，末尾斜杠会自动归一化。
-- 适用入口：
-  - 固定正式域名，如 `https://codex.example.com`
-  - tunnel 临时域名，如 `https://abc123.trycloudflare.com`
-- 若未设置 `PUBLIC_BASE_URL`、地址非法，或公网入口暂不可用，账号中心会自动回退到宿主机浏览器授权模式。
-- 若 tunnel / 外网域名在登录过程中变化，进行中的手机端登录会失效，需要重新发起。
+- 账号登录动作（ChatGPT OAuth / API Key）仅在电脑端开放。
+- 手机端（`<=720px`）仅支持查看账号状态与切换账号档案。
+- 多账号通过账号档案（profile）管理：
+  - 在电脑端新建账号档案并完成登录
+  - 后续可在账号中心随时切换档案（电脑端与手机端都支持）
+- Web 访问密码与 OpenAI / Codex 账号登录状态保持独立。
 
 ## 界面与交互更新
 
@@ -113,7 +106,8 @@ npm run dev -- --host 0.0.0.0 --port 3000
   - 剩余额度悬浮卡片
 - 左侧栏和移动端顶部新增一级“账号中心”入口：
   - 查看当前 OpenAI / Codex 账号状态
-  - 在 ChatGPT 登录和 API Key 登录之间切换
+  - 切换账号档案
+  - 在电脑端发起 ChatGPT / API Key 登录
   - 退出登录或重新认证，不影响 Web 访问密码
 - 输入器已支持语音输入：
   - 浏览器原生语音识别仍是主通道
@@ -138,7 +132,6 @@ npm run dev -- --host 0.0.0.0 --port 3000
   - `ZHIPU_API_KEY`
   - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
 - `iPhone` 或局域网浏览器使用录音回退时，仍建议通过 HTTPS 访问。
-- 手机端使用 ChatGPT OAuth 时，浏览器可能会打开新标签页或跳到外部浏览器；返回后重新打开“账号中心”，页面会基于 `account/read` 自动恢复最新状态。
 
 ## 守护进程说明
 

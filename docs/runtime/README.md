@@ -35,23 +35,12 @@
   - 进入页面后的“账号中心”调用的是 `app-server` 的 `account/*` RPC
 - 当前首版账号中心支持：
   - 查看当前账号状态
-  - 通过 ChatGPT OAuth 登录
-  - 通过 API Key 登录
+  - 电脑端通过 ChatGPT OAuth 登录
+  - 电脑端通过 API Key 登录
+  - 账号档案（profile）新建与切换
   - 退出登录与重新认证
 - 手机端 `<=720px` 会使用全屏 sheet 展示账号中心。
-- 若 ChatGPT OAuth 在手机浏览器里跳到新标签页或外部浏览器，返回后重新打开账号中心即可基于 `account/read` 刷新当前状态。
-
-## 手机端独立授权运行说明
-
-- 通过环境变量 `PUBLIC_BASE_URL` 开启手机端独立 ChatGPT 授权。
-- `PUBLIC_BASE_URL` 要求：
-  - 必须是手机可访问的绝对 URL
-  - 必须使用 `https://`
-  - 尾部 `/` 会自动归一化
-- 可用入口既可以是固定正式域名，也可以是 Cloudflare Tunnel / ngrok 之类的临时 HTTPS 域名。
-- 未设置、配置非法或公网入口不可用时，账号中心会自动回退到宿主机浏览器授权模式。
-- 若 tunnel / 外网域名在授权过程中变化，进行中的手机端登录会返回 `public_url_changed`，需要重新发起。
-- 服务重启后，尚未完成的手机端登录会返回 `server_restarted`，需要重新发起。
+- 手机端只支持查看状态与切换账号档案，不执行授权登录动作。
 
 ## 语音输入运行说明
 
@@ -67,7 +56,6 @@
 
 - `--https-cert <path>`
 - `--https-key <path>`
-- `PUBLIC_BASE_URL=https://<public-host>`
 - `CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER=openai|zhipu`
 - OpenAI:
   - `OPENAI_API_KEY`

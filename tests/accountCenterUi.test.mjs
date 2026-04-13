@@ -6,49 +6,61 @@ async function read(path) {
   return readFile(new URL(path, import.meta.url), 'utf8')
 }
 
-test('codex gateway exposes account center rpc helpers', async () => {
+test('codex gateway exposes account center rpc helpers and profile apis', async () => {
   const gateway = await read('../src/api/codexGateway.ts')
 
   assert.match(gateway, /export async function getAccountStatus\(/)
   assert.match(gateway, /export async function startAccountLogin\(/)
-  assert.match(gateway, /export async function startMobileChatgptLogin\(/)
-  assert.match(gateway, /export async function getMobileChatgptLoginStatus\(/)
   assert.match(gateway, /export async function cancelAccountLogin\(/)
   assert.match(gateway, /export async function logoutAccount\(/)
   assert.match(gateway, /export async function refreshAccountStatus\(/)
   assert.match(gateway, /export async function openUrlInHostBrowser\(/)
+  assert.match(gateway, /export async function listAccountProfiles\(/)
+  assert.match(gateway, /export async function createAccountProfile\(/)
+  assert.match(gateway, /export async function switchAccountProfile\(/)
 
   assert.match(gateway, /callRpc<[^>]+>\('account\/read'/)
   assert.match(gateway, /callRpc<[^>]+>\('account\/login\/start'/)
   assert.match(gateway, /callRpc<[^>]+>\('account\/login\/cancel'/)
   assert.match(gateway, /callRpc\('account\/logout'/)
   assert.match(gateway, /callRpc<[^>]+>\('web-local\/browser\/open'/)
-  assert.match(gateway, /\/api\/auth\/chatgpt\/mobile\/start/)
-  assert.match(gateway, /\/api\/auth\/chatgpt\/mobile\/status/)
+  assert.match(gateway, /\/codex-api\/account-profiles/)
+  assert.match(gateway, /\/codex-api\/account-profiles\/switch/)
+
+  assert.doesNotMatch(gateway, /startMobileChatgptLogin/)
+  assert.doesNotMatch(gateway, /getMobileChatgptLoginStatus/)
 })
 
-test('account center state consumes account notifications', async () => {
+test('account center state supports profile switching and desktop-only auth actions', async () => {
   const state = await read('../src/composables/useAccountCenterState.ts')
 
   assert.match(state, /account\/updated/)
   assert.match(state, /account\/login\/completed/)
   assert.match(state, /account\/rateLimits\/updated/)
   assert.match(state, /export function useAccountCenterState\(/)
-  assert.match(state, /isLoopbackUrl\(/)
-  assert.match(state, /openPendingAuthPageOnHost\(/)
-  assert.match(state, /mobileDirectAuthAvailable/)
-  assert.match(state, /startMobileChatgptLogin\(/)
-  assert.match(state, /getMobileChatgptLoginStatus\(/)
-  assert.match(state, /public_url_changed|server_restarted|expired/)
-  assert.match(state, /setTimeout|clearTimeout/)
-  assert.match(state, /localhost|127\.0\.0\.1/)
+  assert.match(state, /accountProfiles/)
+  assert.match(state, /activeProfileId/)
+  assert.match(state, /switchToAccountProfile\(/)
+  assert.match(state, /createAndSwitchAccountProfile\(/)
+  assert.match(state, /window\.matchMedia/)
+  assert.match(state, /手机端不支持授权登录/)
+
+  assert.doesNotMatch(state, /startMobileChatgptLogin/)
+  assert.doesNotMatch(state, /getMobileChatgptLoginStatus/)
+  assert.doesNotMatch(state, /public_url_changed|server_restarted|expired/)
 })
 
-test('app mounts account center entry and sheet', async () => {
+test('app mounts account center sheet with profile switching actions', async () => {
   const app = await read('../src/App.vue')
 
   assert.match(app, /AccountCenterSheet/)
   assert.match(app, /useAccountCenterState/)
   assert.match(app, /sidebar-account-button/)
   assert.match(app, /mobile-account-button/)
+  assert.match(app, /function onStartChatgptLoginNewProfile\(\): void/)
+  assert.match(app, /function onSwitchAccountProfile\(profileId: string\): void/)
+  assert.match(app, /@start-chatgpt-login-new-profile=/)
+  assert.match(app, /@switch-profile=/)
+
+  assert.doesNotMatch(app, /mobileDirectAuthAvailable\.value/)
 })

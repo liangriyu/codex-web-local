@@ -24,9 +24,14 @@
             :account="account"
             :requires-openai-auth="requiresOpenaiAuth"
             :rate-limit-snapshot="rateLimitSnapshot"
+            :account-profiles="accountProfiles"
+            :active-profile-id="activeProfileId"
+            :is-mobile-client="isMobileClient"
             :ui-language="uiLanguage"
             :is-busy="isBusy"
             @show-methods="$emit('show-methods')"
+            @start-chatgpt-login-new-profile="$emit('start-chatgpt-login-new-profile')"
+            @switch-profile="$emit('switch-profile', $event)"
             @logout="$emit('logout')"
             @refresh="$emit('refresh')"
           />
@@ -37,11 +42,13 @@
             :login-flow="loginFlow"
             :api-key-draft="apiKeyDraft"
             :error="error"
+            :is-mobile-client="isMobileClient"
             :ui-language="uiLanguage"
             :is-busy="isBusy"
             @back="$emit('go-overview')"
             @show-api-key-form="$emit('show-api-key-form')"
             @start-chatgpt-login="$emit('start-chatgpt-login')"
+            @start-chatgpt-login-new-profile="$emit('start-chatgpt-login-new-profile')"
             @update-api-key="$emit('update-api-key', $event)"
             @submit-api-key="$emit('submit-api-key')"
           />
@@ -74,6 +81,7 @@ import { Teleport } from 'vue'
 import { tUi, type UiLanguage } from '../../i18n/uiText'
 import type {
   UiAccount,
+  UiAccountProfile,
   UiAccountCenterView,
   UiAccountLoginFlow,
   UiAccountStatus,
@@ -89,6 +97,9 @@ const props = defineProps<{
   account: UiAccount | null
   requiresOpenaiAuth: boolean
   rateLimitSnapshot: AccountRateLimitSnapshot | null
+  accountProfiles: UiAccountProfile[]
+  activeProfileId: string
+  isMobileClient: boolean
   availableMethods: Array<'chatgpt' | 'apiKey'>
   view: UiAccountCenterView
   loginFlow: UiAccountLoginFlow
@@ -106,6 +117,8 @@ defineEmits<{
   (event: 'show-methods'): void
   (event: 'show-api-key-form'): void
   (event: 'start-chatgpt-login'): void
+  (event: 'start-chatgpt-login-new-profile'): void
+  (event: 'switch-profile', profileId: string): void
   (event: 'update-api-key', value: string): void
   (event: 'submit-api-key'): void
   (event: 'cancel-login'): void

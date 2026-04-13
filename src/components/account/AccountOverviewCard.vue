@@ -41,9 +41,45 @@
       </div>
     </div>
 
+    <div v-if="accountProfiles.length > 0" class="account-overview-profiles">
+      <p class="account-overview-profiles-title">{{ t('app.accountCenterProfilesTitle') }}</p>
+      <div class="account-overview-profile-list">
+        <button
+          v-for="profile in accountProfiles"
+          :key="profile.id"
+          class="account-overview-profile-item"
+          type="button"
+          :disabled="isBusy || profile.id === activeProfileId"
+          :data-active="profile.id === activeProfileId ? 'true' : 'false'"
+          @click="$emit('switch-profile', profile.id)"
+        >
+          <span class="account-overview-profile-main">
+            <strong>{{ profile.name }}</strong>
+            <small class="account-overview-profile-meta">{{ profileMetaText(profile) }}</small>
+          </span>
+          <span>{{ profile.id === activeProfileId ? t('app.accountCenterProfileCurrent') : t('app.accountCenterProfileSwitch') }}</span>
+        </button>
+      </div>
+    </div>
+
     <footer class="account-overview-actions">
-      <button class="account-overview-primary" type="button" :disabled="isBusy" @click="$emit('show-methods')">
+      <button
+        v-if="!isMobileClient"
+        class="account-overview-primary"
+        type="button"
+        :disabled="isBusy"
+        @click="$emit('show-methods')"
+      >
         {{ primaryActionLabel }}
+      </button>
+      <button
+        v-if="!isMobileClient"
+        class="account-overview-secondary"
+        type="button"
+        :disabled="isBusy"
+        @click="$emit('start-chatgpt-login-new-profile')"
+      >
+        {{ t('app.accountCenterLoginWithChatgptNewProfile') }}
       </button>
       <button class="account-overview-secondary" type="button" :disabled="isBusy" @click="$emit('refresh')">
         {{ t('app.accountCenterRefresh') }}
@@ -64,7 +100,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { tUi, type UiLanguage } from '../../i18n/uiText'
-import type { UiAccount, UiAccountStatus } from '../../types/codex'
+import type { UiAccount, UiAccountProfile, UiAccountStatus } from '../../types/codex'
 import type { AccountRateLimitSnapshot } from '../../api/codexGateway'
 
 const props = defineProps<{
@@ -72,12 +108,17 @@ const props = defineProps<{
   account: UiAccount | null
   requiresOpenaiAuth: boolean
   rateLimitSnapshot: AccountRateLimitSnapshot | null
+  accountProfiles: UiAccountProfile[]
+  activeProfileId: string
+  isMobileClient: boolean
   uiLanguage: UiLanguage
   isBusy?: boolean
 }>()
 
 defineEmits<{
   (event: 'show-methods'): void
+  (event: 'start-chatgpt-login-new-profile'): void
+  (event: 'switch-profile', profileId: string): void
   (event: 'logout'): void
   (event: 'refresh'): void
 }>()
@@ -126,6 +167,30 @@ const primaryActionLabel = computed(() => {
   if (props.status === 'reauth_required') return t('app.accountCenterReauth')
   return t('app.accountCenterChooseMethod')
 })
+
+function profileMetaText(profile: UiAccountProfile): string {
+  if (profile.id !== props.activeProfileId) {
+    return props.uiLanguage === 'zh'
+      ? '已登录（切换可查看详情）'
+      : 'Signed in (switch to view details)'
+  }
+  if (props.account?.email) {
+    return props.account.email
+  }
+  if (props.account?.type === 'apiKey') {
+    return 'API Key'
+  }
+  if (props.status === 'loading') {
+    return t('app.accountCenterStatusLoading')
+  }
+  if (props.status === 'reauth_required') {
+    return t('app.accountCenterStatusReauthRequired')
+  }
+  if (props.status === 'error') {
+    return t('app.accountCenterStatusError')
+  }
+  return t('app.accountCenterStatusLoggedOut')
+}
 </script>
 
 <style scoped>
@@ -226,6 +291,50 @@ const primaryActionLabel = computed(() => {
 
 .account-overview-actions {
   @apply mt-4 flex flex-wrap gap-2;
+}
+
+.account-overview-profiles {
+  @apply mt-4 rounded-xl border px-3 py-3;
+  border-color: color-mix(in srgb, var(--color-border-default) 84%, white);
+  background: color-mix(in srgb, var(--color-bg-surface) 74%, transparent);
+}
+
+.account-overview-profiles-title {
+  @apply m-0 text-xs font-medium;
+  color: var(--color-text-secondary);
+}
+
+.account-overview-profile-list {
+  @apply mt-2 grid gap-2;
+}
+
+.account-overview-profile-item {
+  @apply flex items-center justify-between rounded-lg px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-55;
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 82%, white);
+  background: color-mix(in srgb, var(--color-bg-muted) 82%, white);
+}
+
+.account-overview-profile-item strong {
+  @apply text-sm font-medium;
+  color: var(--color-text-primary);
+}
+
+.account-overview-profile-main {
+  @apply min-w-0 flex flex-col gap-0.5;
+}
+
+.account-overview-profile-meta {
+  @apply text-[11px] font-normal;
+  color: var(--color-text-muted);
+}
+
+.account-overview-profile-item > span:last-child {
+  @apply text-xs;
+  color: var(--color-text-secondary);
+}
+
+.account-overview-profile-item[data-active='true'] {
+  border-color: color-mix(in srgb, var(--color-interactive-strong) 65%, white);
 }
 
 .account-overview-primary,

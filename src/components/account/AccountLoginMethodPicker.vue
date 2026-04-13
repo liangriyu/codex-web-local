@@ -12,7 +12,15 @@
 
     <p v-if="error" class="account-method-picker-error">{{ error }}</p>
 
-    <form v-if="loginFlow === 'api_key_form'" class="account-method-picker-form" @submit.prevent="$emit('submit-api-key')">
+    <p v-if="isMobileClient" class="account-method-picker-mobile-note">
+      {{ t('app.accountCenterMobileOnlySwitchHint') }}
+    </p>
+
+    <form
+      v-else-if="loginFlow === 'api_key_form'"
+      class="account-method-picker-form"
+      @submit.prevent="$emit('submit-api-key')"
+    >
       <label class="account-method-picker-label" for="account-center-api-key">
         {{ t('app.accountCenterApiKeyLabel') }}
       </label>
@@ -42,6 +50,16 @@
         <span>{{ t('app.accountCenterLoginWithChatgptHint') }}</span>
       </button>
       <button
+        v-if="availableMethods.includes('chatgpt')"
+        class="account-method-picker-card"
+        type="button"
+        :disabled="isBusy"
+        @click="$emit('start-chatgpt-login-new-profile')"
+      >
+        <strong>{{ t('app.accountCenterLoginWithChatgptNewProfile') }}</strong>
+        <span>{{ t('app.accountCenterLoginWithChatgptNewProfileHint') }}</span>
+      </button>
+      <button
         v-if="availableMethods.includes('apiKey')"
         class="account-method-picker-card"
         type="button"
@@ -65,6 +83,7 @@ const props = defineProps<{
   loginFlow: UiAccountLoginFlow
   apiKeyDraft: string
   error: string
+  isMobileClient: boolean
   uiLanguage: UiLanguage
   isBusy?: boolean
 }>()
@@ -73,6 +92,7 @@ defineEmits<{
   (event: 'back'): void
   (event: 'show-api-key-form'): void
   (event: 'start-chatgpt-login'): void
+  (event: 'start-chatgpt-login-new-profile'): void
   (event: 'update-api-key', value: string): void
   (event: 'submit-api-key'): void
 }>()
@@ -88,6 +108,9 @@ const title = computed(() =>
 )
 
 const hint = computed(() =>
+  props.isMobileClient
+    ? t('app.accountCenterMobileOnlySwitchHint')
+    :
   props.loginFlow === 'api_key_form'
     ? t('app.accountCenterApiKeyFormHint')
     : t('app.accountCenterChooseMethodHint'),
@@ -130,6 +153,13 @@ const hint = computed(() =>
   border-color: #fecaca;
   background: #fef2f2;
   color: #b91c1c;
+}
+
+.account-method-picker-mobile-note {
+  @apply m-0 rounded-xl border px-3 py-3 text-sm leading-6;
+  border-color: color-mix(in srgb, var(--color-border-default) 84%, white);
+  background: color-mix(in srgb, var(--color-bg-surface) 88%, white);
+  color: var(--color-text-secondary);
 }
 
 .account-method-picker-list {

@@ -233,8 +233,8 @@ const UI_TEXT = {
     en: 'No OpenAI / Codex account is connected yet',
   },
   'app.accountCenterLoggedOutHint': {
-    zh: '登录后即可在手机端查看账号状态、重新认证或退出登录。',
-    en: 'Sign in to review status, re-authenticate, or log out from mobile.',
+    zh: '请先在电脑端登录账号。手机端支持查看状态与切换账号档案。',
+    en: 'Sign in from desktop first. Mobile supports status checks and profile switching.',
   },
   'app.accountCenterRequiresOpenaiAuth': {
     zh: '当前会话需要重新完成 OpenAI 认证，请重新发起登录。',
@@ -293,8 +293,32 @@ const UI_TEXT = {
     en: 'Continue with ChatGPT',
   },
   'app.accountCenterLoginWithChatgptHint': {
-    zh: '会按当前服务能力自动选择手机端直登或宿主机浏览器授权，完成后会自动刷新当前状态。',
-    en: 'Automatically chooses direct mobile auth or host-browser auth based on runtime capability, then refreshes when done.',
+    zh: '在当前账号档案中发起授权，完成后会自动刷新状态。',
+    en: 'Start authorization in the current profile, then refresh status automatically.',
+  },
+  'app.accountCenterLoginWithChatgptNewProfile': {
+    zh: '新建账号档案并登录',
+    en: 'Create profile and sign in',
+  },
+  'app.accountCenterLoginWithChatgptNewProfileHint': {
+    zh: '先创建独立账号档案，再打开 ChatGPT 授权页完成登录。',
+    en: 'Create a dedicated profile first, then open ChatGPT authorization.',
+  },
+  'app.accountCenterProfilesTitle': {
+    zh: '账号档案',
+    en: 'Account profiles',
+  },
+  'app.accountCenterProfileCurrent': {
+    zh: '当前',
+    en: 'Current',
+  },
+  'app.accountCenterProfileSwitch': {
+    zh: '切换',
+    en: 'Switch',
+  },
+  'app.accountCenterMobileOnlySwitchHint': {
+    zh: '手机端不支持授权登录，请在电脑端新增并登录账号；手机端只做账号切换。',
+    en: 'Mobile sign-in is disabled. Add and sign in accounts on desktop, then switch here.',
   },
   'app.accountCenterLoginWithApiKey': {
     zh: '使用 API Key 登录',
