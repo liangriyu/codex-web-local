@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -108,11 +108,16 @@ test('account profile store keeps conversation artifacts when switching profiles
     const store = new AccountProfileStore()
     await store.list()
 
+    await mkdir(join(testCodexHome, 'sessions', '2026', '04'), { recursive: true })
     await mkdir(join(testCodexHome, 'archived_sessions'), { recursive: true })
     await mkdir(join(testCodexHome, 'shared-sessions'), { recursive: true })
     await writeFile(join(testCodexHome, 'state_5.sqlite'), 'state-a', 'utf8')
+    await writeFile(join(testCodexHome, 'state_5.sqlite-wal'), 'state-a-wal-content', 'utf8')
     await writeFile(join(testCodexHome, 'logs_1.sqlite'), 'logs-a', 'utf8')
+    await writeFile(join(testCodexHome, 'logs_2.sqlite'), 'logs-2-a', 'utf8')
+    await writeFile(join(testCodexHome, 'logs_2.sqlite-wal'), 'logs-2-a-wal', 'utf8')
     await writeFile(join(testCodexHome, 'session_index.jsonl'), '{"id":"thread-1"}\n', 'utf8')
+    await writeFile(join(testCodexHome, 'sessions', '2026', '04', 'rollout-a.jsonl'), '{"turn":1}\n', 'utf8')
     await writeFile(join(testCodexHome, 'archived_sessions', 'rollout-a.jsonl'), '{"turn":1}\n', 'utf8')
     await writeFile(join(testCodexHome, 'shared-sessions', 'session-a.json'), '{"session":"a"}\n', 'utf8')
 
@@ -126,8 +131,20 @@ test('account profile store keeps conversation artifacts when switching profiles
       'logs-a',
     )
     assert.equal(
+      await readFile(join(profile2.codexHomeDir, 'logs_2.sqlite'), 'utf8'),
+      'logs-2-a',
+    )
+    assert.equal(
+      await readFile(join(profile2.codexHomeDir, 'logs_2.sqlite-wal'), 'utf8'),
+      'logs-2-a-wal',
+    )
+    assert.equal(
       await readFile(join(profile2.codexHomeDir, 'session_index.jsonl'), 'utf8'),
       '{"id":"thread-1"}\n',
+    )
+    assert.equal(
+      await readFile(join(profile2.codexHomeDir, 'sessions', '2026', '04', 'rollout-a.jsonl'), 'utf8'),
+      '{"turn":1}\n',
     )
     assert.equal(
       await readFile(join(profile2.codexHomeDir, 'archived_sessions', 'rollout-a.jsonl'), 'utf8'),
@@ -140,8 +157,11 @@ test('account profile store keeps conversation artifacts when switching profiles
 
     const sessionIndexRich = '{"id":"thread-2"}\n{"id":"thread-3"}\n'
     await writeFile(join(testCodexHome, 'session_index.jsonl'), sessionIndexRich, 'utf8')
-    const stateRich = 'state-b-with-more-content'
+    const stateRich = 'b'
+    const stateRichWal = 'state-b-with-more-content-in-wal'
     await writeFile(join(testCodexHome, 'state_5.sqlite'), stateRich, 'utf8')
+    await writeFile(join(testCodexHome, 'state_5.sqlite-wal'), stateRichWal, 'utf8')
+    await writeFile(join(testCodexHome, 'sessions', '2026', '04', 'rollout-a.jsonl'), '{"turn":1}\n{"turn":2}\n', 'utf8')
     await store.setActive(profile2.id)
     assert.equal(
       await readFile(join(profile2.codexHomeDir, 'session_index.jsonl'), 'utf8'),
@@ -151,13 +171,28 @@ test('account profile store keeps conversation artifacts when switching profiles
       await readFile(join(profile2.codexHomeDir, 'state_5.sqlite'), 'utf8'),
       stateRich,
     )
+    assert.equal(
+      await readFile(join(profile2.codexHomeDir, 'state_5.sqlite-wal'), 'utf8'),
+      stateRichWal,
+    )
+    assert.equal(
+      await readFile(join(profile2.codexHomeDir, 'sessions', '2026', '04', 'rollout-a.jsonl'), 'utf8'),
+      '{"turn":1}\n{"turn":2}\n',
+    )
 
+    await store.setActive('default')
     await writeFile(join(testCodexHome, 'state_5.sqlite'), 's', 'utf8')
+    await rm(join(testCodexHome, 'state_5.sqlite-wal'), { force: true })
     await writeFile(join(profile2.codexHomeDir, 'state_5.sqlite'), 'state-profile-rich', 'utf8')
+    await writeFile(join(profile2.codexHomeDir, 'state_5.sqlite-wal'), 'state-profile-rich-wal', 'utf8')
     await store.setActive(profile2.id)
     assert.equal(
       await readFile(join(profile2.codexHomeDir, 'state_5.sqlite'), 'utf8'),
       'state-profile-rich',
+    )
+    assert.equal(
+      await readFile(join(profile2.codexHomeDir, 'state_5.sqlite-wal'), 'utf8'),
+      'state-profile-rich-wal',
     )
   } finally {
     if (previousCodexHome === undefined) {

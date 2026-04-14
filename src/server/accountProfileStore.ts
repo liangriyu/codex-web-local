@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -50,6 +50,15 @@ function readEmailFromJwtPayload(payload: Record<string, unknown> | null): strin
   if (directEmail) return directEmail
   const profile = asRecord(payload['https://api.openai.com/profile'])
   return readText(profile?.email)
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'ENOENT'
+  )
 }
 
 type ProfileAuthSummary = {
@@ -125,51 +134,105 @@ export class AccountProfileStore {
     if (!source || !target) return
     if (resolve(source) === resolve(target)) return
 
-    const artifacts: Array<{
-      relativePath: string
-      mode: 'prefer_larger_file' | 'if_target_missing'
-    }> = [
-      { relativePath: 'state_5.sqlite', mode: 'prefer_larger_file' },
-      { relativePath: 'logs_1.sqlite', mode: 'prefer_larger_file' },
-      { relativePath: 'session_index.jsonl', mode: 'prefer_larger_file' },
-      { relativePath: 'archived_sessions', mode: 'if_target_missing' },
-      { relativePath: 'shared-sessions', mode: 'if_target_missing' },
-    ]
+    const readFileSize = async (filePath: string): Promise<number> => {
+      try {
+        const fileStat = await stat(filePath)
+        return fileStat.isFile() ? fileStat.size : 0
+      } catch (error) {
+        if (isNotFoundError(error)) return 0
+        throw error
+      }
+    }
 
-    for (const artifact of artifacts) {
-      const { relativePath, mode } = artifact
+    const syncSqliteBundle = async (baseName: string): Promise<void> => {
+      const suffixes = ['', '-wal', '-shm']
+      const sourceMainPath = join(source, baseName)
+      const targetMainPath = join(target, baseName)
+
+      let sourceMainStat: Awaited<ReturnType<typeof stat>>
+      try {
+        sourceMainStat = await stat(sourceMainPath)
+      } catch (error) {
+        if (isNotFoundError(error)) return
+        throw error
+      }
+      if (!sourceMainStat.isFile()) return
+
+      let targetMainStat: Awaited<ReturnType<typeof stat>> | null = null
+      try {
+        const candidate = await stat(targetMainPath)
+        targetMainStat = candidate.isFile() ? candidate : null
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error
+      }
+
+      const sourceBundleSize = (
+        await Promise.all(suffixes.map((suffix) => readFileSize(join(source, `${baseName}${suffix}`))))
+      ).reduce((sum, size) => sum + size, 0)
+
+      const targetBundleSize = (
+        await Promise.all(suffixes.map((suffix) => readFileSize(join(target, `${baseName}${suffix}`))))
+      ).reduce((sum, size) => sum + size, 0)
+
+      if (targetMainStat && sourceBundleSize <= targetBundleSize) {
+        return
+      }
+
+      for (const suffix of suffixes) {
+        const sourcePath = join(source, `${baseName}${suffix}`)
+        const targetPath = join(target, `${baseName}${suffix}`)
+
+        try {
+          const sourceFileStat = await stat(sourcePath)
+          if (!sourceFileStat.isFile()) continue
+          await cp(sourcePath, targetPath, { force: true })
+        } catch (error) {
+          if (isNotFoundError(error)) {
+            if (suffix !== '') {
+              await rm(targetPath, { force: true })
+            }
+            continue
+          }
+          throw error
+        }
+      }
+    }
+
+    const syncFile = async (relativePath: string): Promise<void> => {
       const sourcePath = join(source, relativePath)
       const targetPath = join(target, relativePath)
-      try {
-        const sourceStat = await stat(sourcePath)
-        if (mode === 'if_target_missing') {
-          try {
-            await stat(targetPath)
-            continue
-          } catch (error) {
-            const message = error instanceof Error ? error.message.toLowerCase() : ''
-            if (!message.includes('enoent')) throw error
-          }
-        } else {
-          if (!sourceStat.isFile()) continue
-          try {
-            const targetStat = await stat(targetPath)
-            if (!targetStat.isFile()) continue
-            if (sourceStat.size <= targetStat.size) continue
-          } catch (error) {
-            const message = error instanceof Error ? error.message.toLowerCase() : ''
-            if (!message.includes('enoent')) throw error
-          }
-        }
+      const sourceStat = await stat(sourcePath)
+      if (!sourceStat.isFile()) return
+      await cp(sourcePath, targetPath, { force: true })
+    }
 
-        await cp(sourcePath, targetPath, {
-          recursive: true,
-          force: true,
-        })
+    const syncDirectory = async (relativePath: string): Promise<void> => {
+      const sourcePath = join(source, relativePath)
+      const targetPath = join(target, relativePath)
+      const sourceStat = await stat(sourcePath)
+      if (!sourceStat.isDirectory()) return
+      await cp(sourcePath, targetPath, {
+        recursive: true,
+        force: true,
+      })
+    }
+
+    const tasks: Array<{ label: string; run: () => Promise<void> }> = [
+      { label: 'state_5.sqlite bundle', run: () => syncSqliteBundle('state_5.sqlite') },
+      { label: 'logs_1.sqlite bundle', run: () => syncSqliteBundle('logs_1.sqlite') },
+      { label: 'logs_2.sqlite bundle', run: () => syncSqliteBundle('logs_2.sqlite') },
+      { label: 'session_index.jsonl', run: () => syncFile('session_index.jsonl') },
+      { label: 'sessions', run: () => syncDirectory('sessions') },
+      { label: 'archived_sessions', run: () => syncDirectory('archived_sessions') },
+      { label: 'shared-sessions', run: () => syncDirectory('shared-sessions') },
+    ]
+
+    for (const task of tasks) {
+      try {
+        await task.run()
       } catch (error) {
-        const message = error instanceof Error ? error.message.toLowerCase() : ''
-        if (message.includes('enoent')) continue
-        console.warn(`[codex-web-local] Failed to sync profile artifact "${relativePath}":`, error)
+        if (isNotFoundError(error)) continue
+        console.warn(`[codex-web-local] Failed to sync profile artifact "${task.label}":`, error)
       }
     }
   }
