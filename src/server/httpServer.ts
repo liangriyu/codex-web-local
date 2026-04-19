@@ -12,6 +12,7 @@ const distDir = join(__dirname, '..', 'dist')
 export type ServerOptions = {
   password?: string
   voiceInputFallback?: VoiceInputFallbackConfig
+  serverMode?: 'shared' | 'isolated'
 }
 
 export type ServerInstance = {
@@ -22,6 +23,7 @@ export type ServerInstance = {
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
   const bridge = createCodexBridgeMiddleware({
+    serverMode: options.serverMode ?? 'isolated',
     voiceInputFallback: options.voiceInputFallback ?? {
       provider: 'openai',
       enabled: false,

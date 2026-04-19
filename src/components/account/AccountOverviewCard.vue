@@ -27,6 +27,10 @@
       {{ emptyCopy }}
     </p>
 
+    <p v-if="sharedCodexAppHint" class="account-overview-hint">
+      {{ sharedCodexAppHint }}
+    </p>
+
     <div v-if="rateLimitSnapshot" class="account-overview-quota">
       <p class="account-overview-quota-title">{{ t('app.accountCenterQuotaTitle') }}</p>
       <div class="account-overview-quota-grid">
@@ -41,7 +45,7 @@
       </div>
     </div>
 
-    <div v-if="accountProfiles.length > 0" class="account-overview-profiles">
+    <div v-if="showProfileList" class="account-overview-profiles">
       <p class="account-overview-profiles-title">{{ t('app.accountCenterProfilesTitle') }}</p>
       <div class="account-overview-profile-list">
         <button
@@ -73,7 +77,7 @@
         {{ primaryActionLabel }}
       </button>
       <button
-        v-if="!isMobileClient"
+        v-if="!isMobileClient && serverConnectionMode === 'isolated'"
         class="account-overview-secondary"
         type="button"
         :disabled="isBusy"
@@ -100,7 +104,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { tUi, type UiLanguage } from '../../i18n/uiText'
-import type { UiAccount, UiAccountProfile, UiAccountStatus } from '../../types/codex'
+import type { UiAccount, UiAccountProfile, UiAccountStatus, UiServerConnectionMode } from '../../types/codex'
 import type { AccountRateLimitSnapshot } from '../../api/codexGateway'
 
 const props = defineProps<{
@@ -110,6 +114,7 @@ const props = defineProps<{
   rateLimitSnapshot: AccountRateLimitSnapshot | null
   accountProfiles: UiAccountProfile[]
   activeProfileId: string
+  serverConnectionMode: UiServerConnectionMode
   isMobileClient: boolean
   uiLanguage: UiLanguage
   isBusy?: boolean
@@ -167,6 +172,14 @@ const primaryActionLabel = computed(() => {
   if (props.status === 'reauth_required') return t('app.accountCenterReauth')
   return t('app.accountCenterChooseMethod')
 })
+
+const showProfileList = computed(() => props.serverConnectionMode === 'isolated' && props.accountProfiles.length > 0)
+
+const sharedCodexAppHint = computed(() =>
+  props.serverConnectionMode === 'shared'
+    ? t('app.accountCenterSharedModeHint')
+    : '',
+)
 
 function profileMetaText(profile: UiAccountProfile): string {
   if (profile.id !== props.activeProfileId) {
@@ -260,6 +273,13 @@ function profileMetaText(profile: UiAccountProfile): string {
 .account-overview-empty {
   @apply mt-4 mb-0 rounded-xl px-3 py-3 text-sm leading-6;
   background: color-mix(in srgb, var(--color-bg-surface) 82%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.account-overview-hint {
+  @apply mt-4 mb-0 rounded-xl border px-3 py-3 text-sm leading-6;
+  border-color: color-mix(in srgb, var(--color-border-default) 84%, white);
+  background: color-mix(in srgb, var(--color-bg-surface) 88%, white);
   color: var(--color-text-secondary);
 }
 

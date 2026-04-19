@@ -26,6 +26,7 @@
             :rate-limit-snapshot="rateLimitSnapshot"
             :account-profiles="accountProfiles"
             :active-profile-id="activeProfileId"
+            :server-connection-mode="serverConnectionMode"
             :is-mobile-client="isMobileClient"
             :ui-language="uiLanguage"
             :is-busy="isBusy"
@@ -43,6 +44,7 @@
             :api-key-draft="apiKeyDraft"
             :error="error"
             :is-mobile-client="isMobileClient"
+            :server-connection-mode="serverConnectionMode"
             :ui-language="uiLanguage"
             :is-busy="isBusy"
             @back="$emit('go-overview')"
@@ -85,6 +87,7 @@ import type {
   UiAccountCenterView,
   UiAccountLoginFlow,
   UiAccountStatus,
+  UiServerConnectionMode,
 } from '../../types/codex'
 import type { AccountRateLimitSnapshot } from '../../api/codexGateway'
 import AccountOverviewCard from './AccountOverviewCard.vue'
@@ -99,6 +102,7 @@ const props = defineProps<{
   rateLimitSnapshot: AccountRateLimitSnapshot | null
   accountProfiles: UiAccountProfile[]
   activeProfileId: string
+  serverConnectionMode: UiServerConnectionMode
   isMobileClient: boolean
   availableMethods: Array<'chatgpt' | 'apiKey'>
   view: UiAccountCenterView

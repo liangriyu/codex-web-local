@@ -18,6 +18,7 @@
 ## 更新触发
 当以下内容变化时，必须更新本目录文档：
 - CLI 参数（`--host`、`--port`、`--daemon`、密码相关）
+- 运行模式参数（`--server-mode`）
 - 启动方式（开发/生产）
 - 运行前置条件或依赖
 
@@ -30,19 +31,26 @@
 
 ## 账号中心运行说明
 
+- CLI 运行模式分为：
+  - `shared`：默认模式，目标是连接已有 `codex app-server`，优先满足账号共享与会话强共享方向。
+  - `isolated`：显式独立模式，`codex-web-local` 自己管理运行时，不承诺与桌面 `codex app` 强共享。
+
 - Web 访问密码与底层 OpenAI / Codex 账号是两套独立鉴权：
   - 浏览器首次访问站点时输入的是 `codex-web-local` 自己的访问密码
   - 进入页面后的“账号中心”调用的是 `app-server` 的 `account/*` RPC
-- 账号中心显示和操作的是当前激活 profile 对应的底层账号，不是 `codex app` 原生多账号面板。
-- 当前仓库的多账号切换来自 `codex-web-local` 自己维护的 profile 层；切换时会同步切换当前 `CODEX_HOME`。
+- `shared` 模式下，账号中心显示和操作的是共享 `codex app-server` 当前账号，不再把 profile 当作运行态账号源。
+- `isolated` 模式下，多账号切换仍来自 `codex-web-local` 自己维护的 profile 层；切换时会同步切换当前 `CODEX_HOME`。
 - 当前首版账号中心支持：
   - 查看当前账号状态
   - 电脑端通过 ChatGPT OAuth 登录
   - 电脑端通过 API Key 登录
-  - 账号档案（profile）新建与切换
+  - `isolated` 模式下的账号档案（profile）新建与切换
   - 退出登录与重新认证
 - 手机端 `<=720px` 会使用全屏 sheet 展示账号中心。
-- 手机端只支持查看状态与切换账号档案，不执行授权登录动作。
+- 手机端在 `shared` 模式下只支持查看状态；在 `isolated` 模式下支持切换已有账号档案，不执行授权登录动作。
+- 共享会话当前只有最小 owner 模型：
+  - 若会话 owner 在另一端且 turn 正在运行，Web 输入区会进入只读态
+  - “接管控制权”目前只是 MVP 壳子，不包含完整 server enforcement
 
 ## 语音输入运行说明
 

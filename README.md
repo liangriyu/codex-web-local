@@ -31,6 +31,7 @@ Options:
   -d, --daemon         run in background (daemon mode)
   --password <pass>    set a specific password
   --no-password        disable password protection
+  --server-mode <mode> server runtime mode: shared or isolated (default: shared)
   --https-cert <path>  path to the HTTPS certificate (PEM)
   --https-key <path>   path to the HTTPS private key (PEM)
   -h, --help           display help for command
@@ -55,6 +56,12 @@ codex-web-local --no-password
 
 # Start in daemon mode (run in background)
 codex-web-local --daemon
+
+# Start in shared mode (default, recommended)
+codex-web-local --server-mode shared
+
+# Fall back to isolated mode explicitly
+codex-web-local --server-mode isolated
 
 # Start with an explicit bind host (listen on all interfaces)
 codex-web-local --host 0.0.0.0
@@ -89,15 +96,20 @@ When started with password protection (default), the server prints the password 
 
 That web access password only protects the `codex-web-local` site itself. It is separate from the OpenAI / Codex account shown inside the UI's Account Center.
 
+Runtime mode defaults to `shared`, which is intended to attach to an existing Codex `app-server` for stronger account/session sharing. Use `--server-mode isolated` when you need `codex-web-local` to manage its own runtime instead.
+
 ## Account Center: Desktop Sign-In, Mobile Switching
 
 - Account Center manages the current underlying OpenAI / Codex account exposed by the active `app-server`.
-- This is different from a native multi-account `codex app` feature: `codex-web-local` adds its own profile layer and switches the active `CODEX_HOME` behind the scenes.
+- Runtime behavior now depends on `--server-mode`:
+  - `shared`: the account center operates on the shared `codex app` runtime. Sign-in/sign-out is a global action for that shared runtime.
+  - `isolated`: `codex-web-local` manages its own runtime and may use local account profiles.
 - Account login actions (ChatGPT OAuth / API Key) are desktop-only.
-- Mobile (`<=720px`) only supports profile switching and status viewing.
-- Multi-account is managed with account profiles:
+- Mobile (`<=720px`) only supports status viewing in shared mode; in isolated mode it can still switch existing profiles.
+- Account profiles are only part of `isolated` mode:
   - create a new profile on desktop, then complete login in that profile
-  - switch profiles any time from Account Center (desktop and mobile)
+  - switch profiles from Account Center when the current runtime is isolated
+- In `shared` mode, Account Center no longer treats profiles as the source of truth for the active account.
 - Web access password is still independent from OpenAI / Codex account auth state.
 
 ## UI Highlights
@@ -108,9 +120,13 @@ That web access password only protects the `codex-web-local` site itself. It is 
   - remaining quota hover card
 - Sidebar and mobile header now expose a first-level Account Center entry:
   - review the current OpenAI / Codex account state
-  - switch between account profiles
+  - show whether the current runtime is `shared` or `isolated`
+  - switch between account profiles only in `isolated` mode
   - start ChatGPT/API Key login only on desktop
   - log out or re-authenticate without changing the web access password
+- Shared session status now exposes a minimal owner model:
+  - when a session is controlled by another client, the composer enters a read-only state
+  - the UI shows a takeover shell instead of silently allowing concurrent writes
 - Composer now supports voice input:
   - browsers with native speech recognition can fill transcripts back into the composer
   - browsers without native recognition can use a server-side voice fallback only when the server explicitly enables it

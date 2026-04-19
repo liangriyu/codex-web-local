@@ -155,7 +155,7 @@ function parseBody(res) {
   return JSON.parse(res.body)
 }
 
-async function withFreshBridge(fn) {
+async function withFreshBridge(fn, bridgeOptions = undefined) {
   const previousCodexHome = process.env.CODEX_HOME
   const globalScope = globalThis
   const previousSharedBridge = globalScope.__codexRemoteSharedBridge__
@@ -163,7 +163,7 @@ async function withFreshBridge(fn) {
 
   const tempCodexHome = await mkdtemp(join(tmpdir(), 'codex-web-local-bridge-'))
   process.env.CODEX_HOME = tempCodexHome
-  const middleware = createCodexBridgeMiddleware()
+  const middleware = createCodexBridgeMiddleware(bridgeOptions)
 
   try {
     await fn({ middleware, tempCodexHome })
@@ -181,6 +181,100 @@ async function withFreshBridge(fn) {
     await rm(tempCodexHome, { recursive: true, force: true })
   }
 }
+
+test('shared mode prepares connection by attaching instead of loading active profiles', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    let attachCount = 0
+    let profileLoadCount = 0
+    let embeddedStartCount = 0
+
+    appServer.connectToExistingAppServer = async () => {
+      attachCount += 1
+    }
+    appServer.ensureActiveProfileLoaded = async () => {
+      profileLoadCount += 1
+    }
+    appServer.startEmbeddedAppServer = async () => {
+      embeddedStartCount += 1
+    }
+
+    await appServer.prepareConnection()
+
+    assert.equal(attachCount, 1)
+    assert.equal(profileLoadCount, 0)
+    assert.equal(embeddedStartCount, 0)
+    assert.deepEqual(appServer.getServerConnectionState(), {
+      serverMode: 'shared',
+      serverConnectionStatus: 'connected',
+      serverConnectionError: null,
+    })
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode reports attach failures without silently falling back to embedded startup', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    let embeddedStartCount = 0
+    appServer.connectToExistingAppServer = async () => {
+      throw new Error('attach unavailable')
+    }
+    appServer.startEmbeddedAppServer = async () => {
+      embeddedStartCount += 1
+    }
+
+    await assert.rejects(
+      appServer.prepareConnection(),
+      /attach unavailable/i,
+    )
+
+    assert.equal(embeddedStartCount, 0)
+    assert.deepEqual(appServer.getServerConnectionState(), {
+      serverMode: 'shared',
+      serverConnectionStatus: 'connect_failed',
+      serverConnectionError: 'attach unavailable',
+    })
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode account profile creation does not copy conversation artifacts', async () => {
+  await withFreshBridge(async ({ middleware, tempCodexHome }) => {
+    await mkdir(join(tempCodexHome, 'sessions', '2026', '04'), { recursive: true })
+    await writeFile(join(tempCodexHome, 'session_index.jsonl'), '{"id":"thread-shared"}\n', 'utf8')
+    await writeFile(join(tempCodexHome, 'sessions', '2026', '04', 'rollout-shared.jsonl'), '{"turn":1}\n', 'utf8')
+
+    const createdRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles',
+      { name: '共享账号缓存' },
+    )
+    assert.equal(createdRes.statusCode, 200)
+
+    const createdBody = parseBody(createdRes)
+    const createdProfile = createdBody.data
+    assert.ok(createdProfile?.codexHomeDir)
+
+    await assert.rejects(
+      readFile(join(createdProfile.codexHomeDir, 'session_index.jsonl'), 'utf8'),
+      { code: 'ENOENT' },
+    )
+    await assert.rejects(
+      readFile(join(createdProfile.codexHomeDir, 'sessions', '2026', '04', 'rollout-shared.jsonl'), 'utf8'),
+      { code: 'ENOENT' },
+    )
+  }, {
+    serverMode: 'shared',
+  })
+})
 
 function baseSharedSnapshot(sessionId, title = sessionId) {
   return {
