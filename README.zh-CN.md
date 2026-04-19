@@ -91,6 +91,8 @@ npm run dev -- --host 0.0.0.0 --daemon
 
 ## 账号中心：电脑端登录，手机端切换
 
+- 账号中心管理的是当前激活 `app-server` 暴露出来的底层 OpenAI / Codex 账号状态。
+- 这不等于 `codex app` 原生多账号能力：`codex-web-local` 额外实现了一层账号档案（profile），并通过切换当前 `CODEX_HOME` 来实现多账号使用。
 - 账号登录动作（ChatGPT OAuth / API Key）仅在电脑端开放。
 - 手机端（`<=720px`）仅支持查看账号状态与切换账号档案。
 - 多账号通过账号档案（profile）管理：

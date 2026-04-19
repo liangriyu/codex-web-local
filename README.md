@@ -91,6 +91,8 @@ That web access password only protects the `codex-web-local` site itself. It is 
 
 ## Account Center: Desktop Sign-In, Mobile Switching
 
+- Account Center manages the current underlying OpenAI / Codex account exposed by the active `app-server`.
+- This is different from a native multi-account `codex app` feature: `codex-web-local` adds its own profile layer and switches the active `CODEX_HOME` behind the scenes.
 - Account login actions (ChatGPT OAuth / API Key) are desktop-only.
 - Mobile (`<=720px`) only supports profile switching and status viewing.
 - Multi-account is managed with account profiles:

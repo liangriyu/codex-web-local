@@ -33,6 +33,8 @@
 - Web 访问密码与底层 OpenAI / Codex 账号是两套独立鉴权：
   - 浏览器首次访问站点时输入的是 `codex-web-local` 自己的访问密码
   - 进入页面后的“账号中心”调用的是 `app-server` 的 `account/*` RPC
+- 账号中心显示和操作的是当前激活 profile 对应的底层账号，不是 `codex app` 原生多账号面板。
+- 当前仓库的多账号切换来自 `codex-web-local` 自己维护的 profile 层；切换时会同步切换当前 `CODEX_HOME`。
 - 当前首版账号中心支持：
   - 查看当前账号状态
   - 电脑端通过 ChatGPT OAuth 登录
