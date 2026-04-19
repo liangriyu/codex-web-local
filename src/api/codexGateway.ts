@@ -48,6 +48,7 @@ import type {
   UiAccountSnapshot,
   UiCodexConfigSnapshot,
   UiForcedLoginMethod,
+  UiServerConnectionSnapshot,
   ChatMode,
   UiMessage,
   UiPersistedServerRequest,
@@ -128,6 +129,10 @@ type FetchJsonOptions = {
 }
 
 type AccountProfilesResponse = {
+  data?: unknown
+}
+
+type ServerConnectionResponse = {
   data?: unknown
 }
 
@@ -286,6 +291,25 @@ function normalizeAccountProfilesSnapshot(payload: unknown): UiAccountProfilesSn
   return {
     activeProfileId,
     profiles,
+  }
+}
+
+function normalizeServerConnectionSnapshot(payload: unknown): UiServerConnectionSnapshot {
+  const row = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {}
+  const serverConnectionMode = row.serverMode === 'shared' ? 'shared' : 'isolated'
+  const serverConnectionStatus = row.serverConnectionStatus === 'connect_failed'
+    ? 'connect_failed'
+    : row.serverConnectionStatus === 'connected'
+      ? 'connected'
+      : 'idle'
+  return {
+    serverConnectionMode,
+    serverConnectionStatus,
+    serverConnectionError: typeof row.serverConnectionError === 'string' && row.serverConnectionError.trim().length > 0
+      ? row.serverConnectionError.trim()
+      : null,
   }
 }
 
@@ -1172,6 +1196,15 @@ export async function getAccountStatus(): Promise<UiAccountSnapshot> {
     refreshToken: false,
   })
   return normalizeAccountSnapshot(payload)
+}
+
+export async function getServerConnectionState(): Promise<UiServerConnectionSnapshot> {
+  const payload = await fetchJson<ServerConnectionResponse>(
+    '/codex-api/server-connection',
+    'Failed to read server connection state',
+    'GET /codex-api/server-connection',
+  )
+  return normalizeServerConnectionSnapshot(payload.data)
 }
 
 export async function refreshAccountStatus(): Promise<UiAccountSnapshot> {

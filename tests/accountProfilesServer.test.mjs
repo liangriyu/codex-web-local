@@ -150,9 +150,9 @@ test('account profile store keeps conversation artifacts when switching profiles
       await readFile(join(profile2.codexHomeDir, 'archived_sessions', 'rollout-a.jsonl'), 'utf8'),
       '{"turn":1}\n',
     )
-    assert.equal(
-      await readFile(join(profile2.codexHomeDir, 'shared-sessions', 'session-a.json'), 'utf8'),
-      '{"session":"a"}\n',
+    await assert.rejects(
+      readFile(join(profile2.codexHomeDir, 'shared-sessions', 'session-a.json'), 'utf8'),
+      { code: 'ENOENT' },
     )
 
     const sessionIndexRich = '{"id":"thread-2"}\n{"id":"thread-3"}\n'
@@ -193,6 +193,51 @@ test('account profile store keeps conversation artifacts when switching profiles
     assert.equal(
       await readFile(join(profile2.codexHomeDir, 'state_5.sqlite-wal'), 'utf8'),
       'state-profile-rich-wal',
+    )
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME
+    } else {
+      process.env.CODEX_HOME = previousCodexHome
+    }
+  }
+})
+
+test('account profile store skips conversation artifact sync in shared mode', async () => {
+  const previousCodexHome = process.env.CODEX_HOME
+  const testCodexHome = await mkdtemp(join(tmpdir(), 'codex-web-local-profiles-shared-'))
+  process.env.CODEX_HOME = testCodexHome
+
+  try {
+    const store = new AccountProfileStore({ serverMode: 'shared' })
+    await store.list()
+
+    await mkdir(join(testCodexHome, 'sessions', '2026', '04'), { recursive: true })
+    await mkdir(join(testCodexHome, 'archived_sessions'), { recursive: true })
+    await writeFile(join(testCodexHome, 'state_5.sqlite'), 'state-a', 'utf8')
+    await writeFile(join(testCodexHome, 'session_index.jsonl'), '{"id":"thread-1"}\n', 'utf8')
+    await writeFile(join(testCodexHome, 'sessions', '2026', '04', 'rollout-a.jsonl'), '{"turn":1}\n', 'utf8')
+    await writeFile(join(testCodexHome, 'archived_sessions', 'rollout-a.jsonl'), '{"turn":1}\n', 'utf8')
+
+    const profile2 = await store.create('账号 2')
+
+    await assert.rejects(
+      readFile(join(profile2.codexHomeDir, 'state_5.sqlite'), 'utf8'),
+      { code: 'ENOENT' },
+    )
+    await assert.rejects(
+      readFile(join(profile2.codexHomeDir, 'session_index.jsonl'), 'utf8'),
+      { code: 'ENOENT' },
+    )
+    await assert.rejects(
+      readFile(join(profile2.codexHomeDir, 'sessions', '2026', '04', 'rollout-a.jsonl'), 'utf8'),
+      { code: 'ENOENT' },
+    )
+
+    await store.setActive(profile2.id)
+    await assert.rejects(
+      readFile(join(profile2.codexHomeDir, 'archived_sessions', 'rollout-a.jsonl'), 'utf8'),
+      { code: 'ENOENT' },
     )
   } finally {
     if (previousCodexHome === undefined) {

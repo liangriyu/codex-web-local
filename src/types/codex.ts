@@ -156,6 +156,15 @@ export type UiAccountProfilesSnapshot = {
   profiles: UiAccountProfile[]
 }
 
+export type UiServerConnectionMode = 'shared' | 'isolated'
+export type UiServerConnectionStatus = 'idle' | 'connected' | 'connect_failed'
+
+export type UiServerConnectionSnapshot = {
+  serverConnectionMode: UiServerConnectionMode
+  serverConnectionStatus: UiServerConnectionStatus
+  serverConnectionError: string | null
+}
+
 export type UiCodexConfigSnapshot = {
   forcedLoginMethod: UiForcedLoginMethod | null
 }

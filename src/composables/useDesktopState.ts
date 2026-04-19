@@ -44,7 +44,9 @@ import type {
     UiMessage,
     UiPersistedServerRequest,
     UiProjectGroup,
+    UiSharedSessionOwner,
     UiSharedSessionSnapshot,
+    UiSharedSessionState,
   UiServerRequest,
   UiServerRequestReply,
   UiThread,
@@ -387,6 +389,13 @@ export function useDesktopState() {
     return sharedSessionSnapshotByThreadId.value[threadId]
       ?? sharedSessionSnapshotBySessionId.value[threadId]
       ?? null
+  })
+  const sharedSessionOwner = computed<UiSharedSessionOwner | null>(() => selectedSharedSessionSnapshot.value?.owner ?? null)
+  const sharedSessionState = computed<UiSharedSessionState | null>(() => selectedSharedSessionSnapshot.value?.state ?? null)
+  const canTakeOver = computed<boolean>(() => {
+    const snapshot = selectedSharedSessionSnapshot.value
+    if (!snapshot) return false
+    return snapshot.owner === 'terminal' && snapshot.capabilities.canRequestTakeover === true
   })
   const selectedThreadFileChangeTimeline = computed<UiThreadFileChangeTimeline | null>(() => {
     const threadId = selectedThreadId.value
@@ -2807,6 +2816,9 @@ export function useDesktopState() {
     sharedSessionSnapshots,
     sharedSessionSnapshotByThreadId,
     selectedSharedSessionSnapshot,
+    sharedSessionOwner,
+    sharedSessionState,
+    canTakeOver,
     selectedWorkspaceModel,
     selectedWorkspaceDiffTotals,
     selectedThreadFileChangeTimeline,

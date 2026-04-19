@@ -18,6 +18,8 @@ type PersistedAccountProfiles = {
   profiles: AccountProfile[]
 }
 
+type AccountProfileStoreServerMode = 'shared' | 'isolated'
+
 const DEFAULT_PROFILE_ID = 'default'
 const DEFAULT_PROFILE_NAME = '默认账号'
 
@@ -118,17 +120,23 @@ function createDefaultProfile(nowIso: string): AccountProfile {
 }
 
 export class AccountProfileStore {
+  private readonly serverMode: AccountProfileStoreServerMode
   private readonly ledgerPath = getProfilesLedgerPath()
   private loaded = false
   private activeProfileId: string | null = null
   private readonly profiles = new Map<string, AccountProfile>()
   private flushChain: Promise<void> = Promise.resolve()
 
+  constructor(options: { serverMode?: AccountProfileStoreServerMode } = {}) {
+    this.serverMode = options.serverMode ?? 'isolated'
+  }
+
   private async ensureProfileDirectory(codexHomeDir: string): Promise<void> {
     await mkdir(codexHomeDir, { recursive: true })
   }
 
   private async syncConversationArtifacts(sourceCodexHomeDir: string | null, targetCodexHomeDir: string): Promise<void> {
+    if (this.serverMode === 'shared') return
     const source = readText(sourceCodexHomeDir)
     const target = readText(targetCodexHomeDir)
     if (!source || !target) return
@@ -224,7 +232,6 @@ export class AccountProfileStore {
       { label: 'session_index.jsonl', run: () => syncFile('session_index.jsonl') },
       { label: 'sessions', run: () => syncDirectory('sessions') },
       { label: 'archived_sessions', run: () => syncDirectory('archived_sessions') },
-      { label: 'shared-sessions', run: () => syncDirectory('shared-sessions') },
     ]
 
     for (const task of tasks) {

@@ -138,6 +138,7 @@
 
         <section class="content-body">
           <p v-if="error" class="content-error">{{ error }}</p>
+          <p class="content-runtime-hint">{{ accountCenterRuntimeSummary }}</p>
           <template v-if="isHomeRoute">
             <div class="content-grid">
               <div class="new-thread-empty">
@@ -221,6 +222,17 @@
             </div>
 
             <div class="content-composer-row">
+              <div v-if="isSharedSessionComposerReadOnly" class="content-shared-session-takeover">
+                <p class="content-shared-session-takeover-copy">{{ sharedSessionReadOnlyReason }}</p>
+                <button
+                  class="content-shared-session-takeover-button"
+                  type="button"
+                  :disabled="!canTakeOver"
+                  @click="onTakeOverSharedSession"
+                >
+                  接管控制权
+                </button>
+              </div>
               <div v-if="selectedPrimaryApprovalRequest" class="content-approval-overlay-host">
                 <PendingApprovalOverlay
                   :request="selectedPrimaryApprovalRequest"
@@ -260,7 +272,7 @@
                 <span v-if="thinkingIndicatorDetail" class="content-thinking-indicator-detail">{{ thinkingIndicatorDetail }}</span>
               </div>
               <ThreadComposer :active-thread-id="composerThreadContextId"
-                :disabled="isSendingMessage || isLoadingMessages" :models="availableModelIds"
+                :disabled="isSendingMessage || isLoadingMessages || isSharedSessionComposerReadOnly" :models="availableModelIds"
                 :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort"
                 :selected-chat-mode="selectedChatMode"
@@ -300,6 +312,7 @@
     :rate-limit-snapshot="accountRateLimitSnapshot"
     :account-profiles="accountProfiles"
     :active-profile-id="activeProfileId"
+    :server-connection-mode="serverConnectionMode"
     :is-mobile-client="isMobileClient"
     :available-methods="availableLoginMethods"
     :view="accountCenterView"
@@ -372,6 +385,9 @@ const {
   selectedThreadServerRequests,
   selectedThreadPersistedServerRequests,
   selectedSharedSessionSnapshot,
+  sharedSessionOwner,
+  sharedSessionState,
+  canTakeOver,
   globalLiveServerRequests,
   liveApprovalThreadIdSet,
   globalPersistedServerRequests,
@@ -444,6 +460,9 @@ const {
   rateLimitSnapshot: accountRateLimitSnapshot,
   accountProfiles,
   activeProfileId,
+  serverConnectionMode,
+  serverConnectionStatus,
+  serverConnectionError,
   isMobileClient,
   availableLoginMethods,
   opensAuthOnHostBrowser,
@@ -568,6 +587,22 @@ const sidebarAccountSummary = computed(() => {
   if (accountStatus.value === 'error') return t('app.accountCenterStatusError')
   return t('app.accountCenterStatusLoggedOut')
 })
+const accountCenterRuntimeSummary = computed(() => {
+  if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'connect_failed') {
+    if (uiLanguage.value === 'zh') {
+      return '共享模式连接失败，当前未进入强共享'
+    }
+    return serverConnectionError.value
+      ? `Shared mode failed to connect: ${serverConnectionError.value}`
+      : 'Shared mode failed to connect; strong sharing is not active.'
+  }
+  if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'connected') {
+    return uiLanguage.value === 'zh'
+      ? '共享模式 · 已连接共享 app-server'
+      : 'Shared mode · connected to shared app-server'
+  }
+  return uiLanguage.value === 'zh' ? '独立模式' : 'Isolated mode'
+})
 function normalizeActivityText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/gu, ' ')
 }
@@ -642,6 +677,14 @@ const isSelectedThreadInProgress = computed(() =>
     sharedSessionTurnStatus: selectedSharedSessionSnapshot.value?.latestTurnSummary?.status ?? null,
   }),
 )
+const isSharedSessionComposerReadOnly = computed(() =>
+  sharedSessionOwner.value === 'terminal'
+  && (sharedSessionState.value === 'running' || sharedSessionState.value === 'needs_attention'),
+)
+const sharedSessionReadOnlyReason = computed(() => {
+  if (!isSharedSessionComposerReadOnly.value) return ''
+  return `${t('app.sharedSessionControlledBy', { owner: t('app.sharedSessionOwnerTerminal') })} · ${t('app.sharedSessionReturnToOwner')}`
+})
 const canOpenWorkspaceDiff = computed(() => {
   if (isHomeRoute.value) return false
   const cwd = selectedThread.value?.cwd?.trim() ?? ''
@@ -896,6 +939,11 @@ function onInterruptTurn(): void {
 
 function onCompactContext(): void {
   void compactSelectedThreadContext()
+}
+
+function onTakeOverSharedSession(): void {
+  if (!canTakeOver.value) return
+  error.value = sharedSessionReadOnlyReason.value
 }
 
 function onRefreshWorkspaceBranches(): void {
@@ -1478,6 +1526,13 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
   @apply m-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700;
 }
 
+.content-runtime-hint {
+  @apply m-0 rounded-lg border px-3 py-2 text-xs;
+  border-color: color-mix(in srgb, var(--color-border-default) 88%, white);
+  background: color-mix(in srgb, var(--color-bg-muted) 70%, white);
+  color: var(--color-text-secondary);
+}
+
 .content-grid {
   @apply flex-1 min-h-0 flex flex-col gap-3;
 }
@@ -1488,6 +1543,27 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 
 .content-composer-row {
   @apply min-h-0 flex flex-col gap-2;
+}
+
+.content-shared-session-takeover {
+  @apply w-full max-w-175 mx-auto flex items-center justify-between gap-3 rounded-xl border px-4 py-3;
+  border-color: color-mix(in srgb, var(--color-border-default) 84%, white);
+  background: color-mix(in srgb, var(--color-bg-surface) 90%, white);
+}
+
+.content-shared-session-takeover-copy {
+  @apply m-0 text-sm leading-6;
+  color: var(--color-text-secondary);
+}
+
+.content-shared-session-takeover-button {
+  @apply inline-flex shrink-0 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+  background: var(--color-interactive-strong);
+  color: var(--color-text-inverse);
+}
+
+.content-shared-session-takeover-button:hover {
+  background: var(--color-interactive-strong-hover);
 }
 
 .content-approval-overlay-host {

@@ -5,9 +5,11 @@ export type RawCliRuntimeOptions = {
   password: string | boolean
   httpsCert?: string
   httpsKey?: string
+  serverMode?: string
 }
 
 export type VoiceInputProvider = 'openai' | 'zhipu'
+export type ServerMode = 'shared' | 'isolated'
 
 export type VoiceInputFallbackConfig = {
   provider: VoiceInputProvider
@@ -21,6 +23,7 @@ export type NormalizedCliRuntimeConfig = {
   host?: string
   daemon: boolean
   password: string | boolean
+  serverMode: ServerMode
   https?: {
     cert: string
     key: string
@@ -66,6 +69,17 @@ function normalizeVoiceInputFallbackConfig(env: NodeJS.ProcessEnv): VoiceInputFa
   }
 }
 
+function normalizeServerMode(rawMode: string | undefined): ServerMode {
+  const normalizedMode = rawMode?.trim().toLowerCase()
+  if (!normalizedMode) {
+    return 'shared'
+  }
+  if (normalizedMode === 'shared' || normalizedMode === 'isolated') {
+    return normalizedMode
+  }
+  throw new Error(`Unsupported server mode: ${rawMode}`)
+}
+
 export function normalizeCliRuntimeConfig(
   raw: RawCliRuntimeOptions,
   env: NodeJS.ProcessEnv = process.env,
@@ -85,6 +99,7 @@ export function normalizeCliRuntimeConfig(
     host: raw.host?.trim() || undefined,
     daemon: raw.daemon === true,
     password: raw.password,
+    serverMode: normalizeServerMode(raw.serverMode),
     https: httpsCert && httpsKey
       ? {
           cert: httpsCert,

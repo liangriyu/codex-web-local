@@ -15,6 +15,7 @@ const program = new Command()
   .option('-d, --daemon', 'run in background (daemon mode)')
   .option('--password <pass>', 'set a specific password')
   .option('--no-password', 'disable password protection')
+  .option('--server-mode <mode>', 'server runtime mode: shared or isolated (default: shared)')
   .option('--https-cert <path>', 'path to the HTTPS certificate (PEM)')
   .option('--https-key <path>', 'path to the HTTPS private key (PEM)')
   .parse()
@@ -24,6 +25,7 @@ const runtimeConfig = normalizeCliRuntimeConfig(program.opts<{
   host?: string
   daemon?: boolean
   password: string | boolean
+  serverMode?: string
   httpsCert?: string
   httpsKey?: string
 }>())
@@ -83,6 +85,7 @@ if (runtimeConfig.daemon) {
 
 const { app, dispose } = createApp({
   password,
+  serverMode: runtimeConfig.serverMode,
   voiceInputFallback: runtimeConfig.voiceInputFallback,
 })
 const server = runtimeConfig.https

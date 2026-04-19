@@ -44,8 +44,13 @@
 
 ## Bridge 私有 HTTP 约定（账号中心）
 
+- 运行模式 / 连接状态接口：
+  - `GET /codex-api/server-connection`
 - 账号档案（profile）管理接口：
   - `GET /codex-api/account-profiles`
   - `POST /codex-api/account-profiles`
   - `POST /codex-api/account-profiles/switch`
+- 共享会话读取接口：
+  - `GET /codex-api/shared-sessions`
+  - `GET /codex-api/shared-sessions/:sessionId`
 - 2026-04-12 起，手机端 ChatGPT 直登 relay 接口已移除（不再提供 `/api/auth/chatgpt/mobile/*` 与 `/auth/chatgpt/callback`）。

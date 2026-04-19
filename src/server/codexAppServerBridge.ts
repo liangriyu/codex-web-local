@@ -33,9 +33,10 @@ import {
   createTranscriptionService,
   TranscriptionServiceError,
   type VoiceInputFallbackConfig,
-} from './transcriptionService.js'
 // @ts-ignore - tests import this TypeScript module directly via node:test.
-import { AccountProfileStore, type AccountProfile } from './accountProfileStore.js'
+} from './transcriptionService.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { AccountProfileStore, type AccountProfile } from './accountProfileStore.ts'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -91,6 +92,9 @@ type PersistedServerRequest = {
   dismissedReason: string | null
   dismissedBy: 'user' | null
 }
+
+type BridgeServerMode = 'shared' | 'isolated'
+type BridgeServerConnectionStatus = 'idle' | 'connected' | 'connect_failed'
 
 const PERSISTED_SERVER_REQUEST_UNRESOLVED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const PERSISTED_SERVER_REQUEST_RESOLVED_RETENTION_MS = 24 * 60 * 60 * 1000
@@ -1244,7 +1248,7 @@ async function pushWorkspaceBranch(cwd: string): Promise<{
 
 async function readWorkspacePushStatus(cwd: string): Promise<WorkspacePushMetadata & { blockedReasons: string[] }> {
   const metadata = await resolveWorkspacePushMetadata(cwd)
-  const guard = await getSharedBridgeState().appServer.getWorkspaceGuard(cwd)
+  const guard = await getSharedBridgeState('isolated').appServer.getWorkspaceGuard(cwd)
   return {
     ...metadata,
     blockedReasons: guard.blockedReasons,
@@ -1290,8 +1294,18 @@ class AppServerProcess {
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   }
-  private readonly accountProfileStore = new AccountProfileStore()
+  private readonly accountProfileStore: AccountProfileStore
   private codexHomeOverride: string | null = null
+  private readonly serverMode: BridgeServerMode
+  private serverConnectionStatus: BridgeServerConnectionStatus = 'idle'
+  private serverConnectionError: string | null = null
+
+  constructor(options: { serverMode?: BridgeServerMode } = {}) {
+    this.serverMode = options.serverMode ?? 'isolated'
+    this.accountProfileStore = new AccountProfileStore({
+      serverMode: this.serverMode,
+    })
+  }
 
   setVoiceInputFallbackConfig(config: VoiceInputFallbackConfig): void {
     this.voiceInputFallbackConfig = config
@@ -1313,6 +1327,18 @@ class AppServerProcess {
       return
     }
     delete process.env.CODEX_HOME
+  }
+
+  getServerConnectionState(): {
+    serverMode: BridgeServerMode
+    serverConnectionStatus: BridgeServerConnectionStatus
+    serverConnectionError: string | null
+  } {
+    return {
+      serverMode: this.serverMode,
+      serverConnectionStatus: this.serverConnectionStatus,
+      serverConnectionError: this.serverConnectionError,
+    }
   }
 
   private async ensureActiveProfileLoaded(): Promise<void> {
@@ -1478,6 +1504,84 @@ class AppServerProcess {
     return PRIVATE_RPC_NOT_HANDLED
   }
 
+  async connectToExistingAppServer(): Promise<void> {
+    throw new Error('Shared mode attach is not configured yet')
+  }
+
+  async startEmbeddedAppServer(): Promise<void> {
+    await this.ensureActiveProfileLoaded()
+    const codexHomeDir = this.getCurrentCodexHomeDir()
+    const proc = spawn('codex', ['app-server'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: codexHomeDir
+        ? {
+            ...process.env,
+            CODEX_HOME: codexHomeDir,
+          }
+        : process.env,
+    })
+    this.process = proc
+
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk: string) => {
+      this.readBuffer += chunk
+
+      let lineEnd = this.readBuffer.indexOf('\n')
+      while (lineEnd !== -1) {
+        const line = this.readBuffer.slice(0, lineEnd).trim()
+        this.readBuffer = this.readBuffer.slice(lineEnd + 1)
+
+        if (line.length > 0) {
+          this.handleLine(line)
+        }
+
+        lineEnd = this.readBuffer.indexOf('\n')
+      }
+    })
+
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', () => {
+      // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
+    })
+
+    proc.on('exit', () => {
+      const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
+      for (const request of this.pending.values()) {
+        request.reject(failure)
+      }
+
+      this.pending.clear()
+      this.pendingServerRequests.clear()
+      this.process = null
+      this.initialized = false
+      this.initializePromise = null
+      this.readBuffer = ''
+      this.serverConnectionStatus = 'idle'
+      this.serverConnectionError = null
+    })
+  }
+
+  async prepareConnection(): Promise<void> {
+    if (this.process) return
+
+    if (this.serverMode === 'shared') {
+      try {
+        await this.connectToExistingAppServer()
+        this.serverConnectionStatus = 'connected'
+        this.serverConnectionError = null
+      } catch (error) {
+        this.serverConnectionStatus = 'connect_failed'
+        this.serverConnectionError = getErrorMessage(error, 'Failed to attach shared app-server')
+        throw error
+      }
+      return
+    }
+
+    await this.startEmbeddedAppServer()
+    this.serverConnectionStatus = 'connected'
+    this.serverConnectionError = null
+  }
+
   private async start(): Promise<void> {
     if (this.process) return
     if (this.startPromise) {
@@ -1487,54 +1591,10 @@ class AppServerProcess {
 
     this.startPromise = (async () => {
       this.stopping = false
-      await this.ensureActiveProfileLoaded()
-      const codexHomeDir = this.getCurrentCodexHomeDir()
-      const proc = spawn('codex', ['app-server'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: codexHomeDir
-          ? {
-              ...process.env,
-              CODEX_HOME: codexHomeDir,
-            }
-          : process.env,
-      })
-      this.process = proc
-
-      proc.stdout.setEncoding('utf8')
-      proc.stdout.on('data', (chunk: string) => {
-        this.readBuffer += chunk
-
-        let lineEnd = this.readBuffer.indexOf('\n')
-        while (lineEnd !== -1) {
-          const line = this.readBuffer.slice(0, lineEnd).trim()
-          this.readBuffer = this.readBuffer.slice(lineEnd + 1)
-
-          if (line.length > 0) {
-            this.handleLine(line)
-          }
-
-          lineEnd = this.readBuffer.indexOf('\n')
-        }
-      })
-
-      proc.stderr.setEncoding('utf8')
-      proc.stderr.on('data', () => {
-        // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
-      })
-
-      proc.on('exit', () => {
-        const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
-        for (const request of this.pending.values()) {
-          request.reject(failure)
-        }
-
-        this.pending.clear()
-        this.pendingServerRequests.clear()
-        this.process = null
-        this.initialized = false
-        this.initializePromise = null
-        this.readBuffer = ''
-      })
+      await this.prepareConnection()
+      if (!this.process) {
+        throw new Error('Shared mode attached without an active transport')
+      }
     })()
 
     try {
@@ -2483,30 +2543,36 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 type SharedBridgeState = {
   appServer: AppServerProcess
   methodCatalog: MethodCatalog
+  serverMode: BridgeServerMode
 }
 
 const PRIVATE_RPC_NOT_HANDLED = Symbol('PRIVATE_RPC_NOT_HANDLED')
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
 
-function getSharedBridgeState(): SharedBridgeState {
+function getSharedBridgeState(serverMode: BridgeServerMode): SharedBridgeState {
   const globalScope = globalThis as typeof globalThis & {
     [SHARED_BRIDGE_KEY]?: SharedBridgeState
   }
 
   const existing = globalScope[SHARED_BRIDGE_KEY]
-  if (existing) return existing
+  if (existing && existing.serverMode === serverMode) return existing
+  existing?.appServer.dispose()
 
   const created: SharedBridgeState = {
-    appServer: new AppServerProcess(),
+    appServer: new AppServerProcess({ serverMode }),
     methodCatalog: new MethodCatalog(),
+    serverMode,
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   return created
 }
 
-export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig } = {}): CodexBridgeMiddleware {
-  const { appServer, methodCatalog } = getSharedBridgeState()
+export function createCodexBridgeMiddleware(options: {
+  voiceInputFallback?: VoiceInputFallbackConfig
+  serverMode?: BridgeServerMode
+} = {}): CodexBridgeMiddleware {
+  const { appServer, methodCatalog } = getSharedBridgeState(options.serverMode ?? 'isolated')
   appServer.setVoiceInputFallbackConfig(options.voiceInputFallback ?? {
     provider: 'openai',
     enabled: false,
@@ -2584,6 +2650,11 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
         } catch (error) {
           setJson(res, 400, { error: getErrorMessage(error, 'Failed to switch account profile') })
         }
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/server-connection') {
+        setJson(res, 200, { data: appServer.getServerConnectionState() })
         return
       }
 

@@ -4,6 +4,7 @@ import {
   createAccountProfile,
   getAccountRateLimitSnapshot,
   getAccountStatus,
+  getServerConnectionState,
   listAccountProfiles,
   logoutAccount,
   openUrlInHostBrowser,
@@ -23,6 +24,8 @@ import type {
   UiAccountProfile,
   UiAccountStatus,
   UiForcedLoginMethod,
+  UiServerConnectionMode,
+  UiServerConnectionStatus,
 } from '../types/codex'
 
 function normalizeAccountAuthMode(value: unknown): UiAccountAuthMode | null {
@@ -81,6 +84,9 @@ const rateLimitSnapshot = ref<AccountRateLimitSnapshot | null>(null)
 const forcedLoginMethod = ref<UiForcedLoginMethod | null>(null)
 const accountProfiles = ref<UiAccountProfile[]>([])
 const activeProfileId = ref('')
+const serverConnectionMode = ref<UiServerConnectionMode>('isolated')
+const serverConnectionStatus = ref<UiServerConnectionStatus>('idle')
+const serverConnectionError = ref<string | null>(null)
 const isMobileClient = ref(false)
 const accountCenterOpen = ref(false)
 const accountCenterView = ref<UiAccountCenterView>('overview')
@@ -150,6 +156,15 @@ async function refreshAccountProfiles(): Promise<void> {
   accountProfiles.value = snapshot.profiles
 }
 
+async function refreshServerConnectionState(): Promise<void> {
+  const snapshot = await getServerConnectionState()
+  serverConnectionMode.value = snapshot.serverConnectionMode
+  serverConnectionStatus.value = snapshot.serverConnectionStatus
+  serverConnectionError.value = snapshot.serverConnectionError
+}
+
+const supportsAccountProfiles = computed(() => serverConnectionMode.value === 'isolated')
+
 async function refreshAccountSnapshot(options: {
   refreshToken?: boolean
   fallbackAuthMode?: UiAccountAuthMode | null
@@ -206,12 +221,17 @@ async function refreshBootstrap(options: {
       accountReader(),
       readCodexConfig(),
       refreshAccountProfiles(),
+      refreshServerConnectionState(),
     ])
 
     currentAccount.value = accountSnapshot.account
     requiresOpenaiAuth.value = accountSnapshot.requiresOpenaiAuth
     authMode.value = accountSnapshot.authMode
     forcedLoginMethod.value = configSnapshot.forcedLoginMethod
+    if (!supportsAccountProfiles.value) {
+      accountProfiles.value = []
+      activeProfileId.value = ''
+    }
 
     if (accountSnapshot.account) {
       await refreshRateLimits()
@@ -318,6 +338,9 @@ async function startHostBrowserChatgptLogin(): Promise<void> {
 }
 
 async function createAndSwitchAccountProfile(name: string | null = null): Promise<UiAccountProfile> {
+  if (!supportsAccountProfiles.value) {
+    throw new Error('共享模式下不支持切换账号档案')
+  }
   const created = await createAccountProfile(name)
   await switchAccountProfile(created.id)
   await refreshBootstrap({ refreshToken: false, preserveLoginFlow: true, silent: true })
@@ -337,7 +360,7 @@ async function beginChatgptLogin(options: { createNewProfile?: boolean } = {}): 
   accountCenterView.value = 'login_progress'
 
   try {
-    if (options.createNewProfile === true) {
+    if (options.createNewProfile === true && supportsAccountProfiles.value) {
       await createAndSwitchAccountProfile(null)
     }
     await startHostBrowserChatgptLogin()
@@ -385,6 +408,10 @@ async function submitApiKeyLogin(apiKey: string = apiKeyDraft.value): Promise<vo
 }
 
 async function switchToAccountProfile(profileId: string): Promise<void> {
+  if (!supportsAccountProfiles.value) {
+    error.value = '共享模式下不支持切换账号档案'
+    return
+  }
   const normalizedProfileId = profileId.trim()
   if (!normalizedProfileId || normalizedProfileId === activeProfileId.value) {
     return
@@ -506,6 +533,10 @@ export function useAccountCenterState() {
     forcedLoginMethod,
     accountProfiles,
     activeProfileId,
+    serverConnectionMode,
+    serverConnectionStatus,
+    serverConnectionError,
+    supportsAccountProfiles,
     isMobileClient,
     availableLoginMethods,
     opensAuthOnHostBrowser,

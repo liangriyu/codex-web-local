@@ -15,6 +15,9 @@
     <p v-if="isMobileClient" class="account-method-picker-mobile-note">
       {{ t('app.accountCenterMobileOnlySwitchHint') }}
     </p>
+    <p v-else-if="serverConnectionMode === 'shared'" class="account-method-picker-mobile-note">
+      {{ t('app.accountCenterSharedModeHint') }}
+    </p>
 
     <form
       v-else-if="loginFlow === 'api_key_form'"
@@ -50,7 +53,7 @@
         <span>{{ t('app.accountCenterLoginWithChatgptHint') }}</span>
       </button>
       <button
-        v-if="availableMethods.includes('chatgpt')"
+        v-if="canCreateProfileDuringLogin"
         class="account-method-picker-card"
         type="button"
         :disabled="isBusy"
@@ -76,7 +79,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { tUi, type UiLanguage } from '../../i18n/uiText'
-import type { UiAccountLoginFlow } from '../../types/codex'
+import type { UiAccountLoginFlow, UiServerConnectionMode } from '../../types/codex'
 
 const props = defineProps<{
   availableMethods: Array<'chatgpt' | 'apiKey'>
@@ -84,6 +87,7 @@ const props = defineProps<{
   apiKeyDraft: string
   error: string
   isMobileClient: boolean
+  serverConnectionMode: UiServerConnectionMode
   uiLanguage: UiLanguage
   isBusy?: boolean
 }>()
@@ -114,6 +118,10 @@ const hint = computed(() =>
   props.loginFlow === 'api_key_form'
     ? t('app.accountCenterApiKeyFormHint')
     : t('app.accountCenterChooseMethodHint'),
+)
+
+const canCreateProfileDuringLogin = computed(() =>
+  props.serverConnectionMode === 'isolated' && props.availableMethods.includes('chatgpt'),
 )
 </script>
 

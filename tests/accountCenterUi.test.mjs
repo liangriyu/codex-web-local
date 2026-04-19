@@ -10,6 +10,7 @@ test('codex gateway exposes account center rpc helpers and profile apis', async 
   const gateway = await read('../src/api/codexGateway.ts')
 
   assert.match(gateway, /export async function getAccountStatus\(/)
+  assert.match(gateway, /export async function getServerConnectionState\(/)
   assert.match(gateway, /export async function startAccountLogin\(/)
   assert.match(gateway, /export async function cancelAccountLogin\(/)
   assert.match(gateway, /export async function logoutAccount\(/)
@@ -26,6 +27,7 @@ test('codex gateway exposes account center rpc helpers and profile apis', async 
   assert.match(gateway, /callRpc<[^>]+>\('web-local\/browser\/open'/)
   assert.match(gateway, /\/codex-api\/account-profiles/)
   assert.match(gateway, /\/codex-api\/account-profiles\/switch/)
+  assert.match(gateway, /\/codex-api\/server-connection/)
 
   assert.doesNotMatch(gateway, /startMobileChatgptLogin/)
   assert.doesNotMatch(gateway, /getMobileChatgptLoginStatus/)
@@ -40,6 +42,12 @@ test('account center state supports profile switching and desktop-only auth acti
   assert.match(state, /export function useAccountCenterState\(/)
   assert.match(state, /accountProfiles/)
   assert.match(state, /activeProfileId/)
+  assert.match(state, /serverConnectionMode/)
+  assert.match(state, /serverConnectionStatus/)
+  assert.match(state, /serverConnectionError/)
+  assert.match(state, /getServerConnectionState\(/)
+  assert.match(state, /supportsAccountProfiles/)
+  assert.match(state, /serverConnectionMode\.value === 'isolated'/)
   assert.match(state, /switchToAccountProfile\(/)
   assert.match(state, /createAndSwitchAccountProfile\(/)
   assert.match(state, /window\.matchMedia/)
@@ -51,7 +59,13 @@ test('account center state supports profile switching and desktop-only auth acti
 })
 
 test('app mounts account center sheet with profile switching actions', async () => {
-  const app = await read('../src/App.vue')
+  const [app, sheet, overview, picker, uiText] = await Promise.all([
+    read('../src/App.vue'),
+    read('../src/components/account/AccountCenterSheet.vue'),
+    read('../src/components/account/AccountOverviewCard.vue'),
+    read('../src/components/account/AccountLoginMethodPicker.vue'),
+    read('../src/i18n/uiText.ts'),
+  ])
 
   assert.match(app, /AccountCenterSheet/)
   assert.match(app, /useAccountCenterState/)
@@ -62,8 +76,21 @@ test('app mounts account center sheet with profile switching actions', async () 
   assert.match(app, /await switchToAccountProfile\(profileId\)/)
   assert.match(app, /resetSessionViewStateForProfileSwitch\(\)/)
   assert.match(app, /await refreshAll\(\)/)
+  assert.match(app, /content-runtime-hint/)
+  assert.match(app, /共享模式连接失败，当前未进入强共享/)
+  assert.match(app, /共享模式 · 已连接共享 app-server/)
+  assert.match(app, /独立模式/)
+  assert.match(app, /:server-connection-mode="serverConnectionMode"/)
   assert.match(app, /@start-chatgpt-login-new-profile=/)
   assert.match(app, /@switch-profile=/)
+  assert.match(sheet, /serverConnectionMode: UiServerConnectionMode/)
+  assert.match(overview, /serverConnectionMode: UiServerConnectionMode/)
+  assert.match(overview, /const showProfileList = computed\(\(\) => props\.serverConnectionMode === 'isolated'/)
+  assert.match(overview, /sharedCodexAppHint/)
+  assert.match(picker, /serverConnectionMode: UiServerConnectionMode/)
+  assert.match(picker, /canCreateProfileDuringLogin/)
+  assert.match(picker, /props\.serverConnectionMode === 'isolated'/)
+  assert.match(uiText, /'app\.accountCenterSharedModeHint'/)
 
   assert.doesNotMatch(app, /mobileDirectAuthAvailable\.value/)
 })

@@ -320,6 +320,10 @@ const UI_TEXT = {
     zh: '手机端不支持授权登录，请在电脑端新增并登录账号；手机端只做账号切换。',
     en: 'Mobile sign-in is disabled. Add and sign in accounts on desktop, then switch here.',
   },
+  'app.accountCenterSharedModeHint': {
+    zh: '当前是共享模式，这里的登录和退出会直接影响共享的 codex app 当前账号。',
+    en: 'Shared mode is active. Sign-in and sign-out here directly affect the shared codex app account.',
+  },
   'app.accountCenterLoginWithApiKey': {
     zh: '使用 API Key 登录',
     en: 'Continue with API Key',
