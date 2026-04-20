@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, platform, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -141,6 +141,10 @@ const READ_ONLY_ACCOUNT_FALLBACK_RPC_METHODS = new Set([
   'thread/list',
   'thread/read',
 ])
+const SHARED_ACCOUNT_PROFILE_FALLBACK_RPC_METHODS = new Set([
+  'account/login/start',
+  'account/login/cancel',
+])
 const SHARED_ENDPOINT_UNAVAILABLE_MESSAGE =
   'Detected a running Codex desktop app, but it did not expose a shared app-server endpoint.'
 
@@ -193,6 +197,15 @@ function execFileText(file: string, args: string[]): Promise<string> {
       resolve(stdout)
     })
   })
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'ENOENT'
+  )
 }
 
 type ThreadFileChangeActionErrorCode =
@@ -1476,6 +1489,8 @@ class AppServerProcess {
   private serverConnectionStatus: BridgeServerConnectionStatus = 'idle'
   private serverConnectionError: string | null = null
   private readOnlyAccountFallbackAppServer: AppServerProcess | null = null
+  private sharedAccountProfileFallbackAppServer: AppServerProcess | null = null
+  private pendingSharedAccountProfileCodexHomeDir: string | null = null
 
   constructor(options: { serverMode?: BridgeServerMode; enableReadOnlyAccountFallback?: boolean } = {}) {
     this.serverMode = options.serverMode ?? 'isolated'
@@ -1548,9 +1563,51 @@ class AppServerProcess {
     return profile
   }
 
+  private async readAuthPayloadFromCodexHomeDir(codexHomeDir: string): Promise<string | null> {
+    try {
+      return await readFile(join(codexHomeDir, 'auth.json'), 'utf8')
+    } catch (error) {
+      if (isMissingFileError(error)) return null
+      throw error
+    }
+  }
+
+  private async writeAuthPayloadToDesktopHome(authPayload: string): Promise<void> {
+    const targetAuthPath = join(this.desktopCodexHomeDir, 'auth.json')
+    const tempAuthPath = join(
+      this.desktopCodexHomeDir,
+      `.auth.json.${process.pid}.${Date.now()}.tmp`,
+    )
+    await mkdir(this.desktopCodexHomeDir, { recursive: true })
+    await writeFile(tempAuthPath, authPayload, 'utf8')
+    await rename(tempAuthPath, targetAuthPath)
+  }
+
+  private async syncProfileAuthToDesktopHome(profile: AccountProfile): Promise<boolean> {
+    const authPayload = await this.readAuthPayloadFromCodexHomeDir(profile.codexHomeDir)
+    if (authPayload === null) return false
+    await this.writeAuthPayloadToDesktopHome(authPayload)
+    return true
+  }
+
   async switchAccountProfile(profileId: string): Promise<AccountProfile> {
-    this.dispose()
     const profile = await this.accountProfileStore.setActive(profileId)
+    if (this.serverMode === 'shared') {
+      const synced = await this.syncProfileAuthToDesktopHome(profile)
+      if (synced) {
+        this.pendingSharedAccountProfileCodexHomeDir = null
+        this.disposeSharedAccountProfileFallbackAppServer()
+        this.disposeReadOnlyAccountFallbackAppServer()
+        return profile
+      }
+
+      this.pendingSharedAccountProfileCodexHomeDir = profile.codexHomeDir
+      this.disposeSharedAccountProfileFallbackAppServer()
+      this.disposeReadOnlyAccountFallbackAppServer()
+      return profile
+    }
+
+    this.dispose()
     this.setActiveCodexHomeDir(profile.codexHomeDir)
     return profile
   }
@@ -1579,6 +1636,15 @@ class AppServerProcess {
     )
   }
 
+  private shouldUseSharedAccountProfileFallback(method: string): boolean {
+    return (
+      this.enableReadOnlyAccountFallback
+      && this.serverMode === 'shared'
+      && !!this.pendingSharedAccountProfileCodexHomeDir
+      && SHARED_ACCOUNT_PROFILE_FALLBACK_RPC_METHODS.has(method)
+    )
+  }
+
   private async getReadOnlyAccountFallbackAppServer(): Promise<AppServerProcess> {
     if (!this.readOnlyAccountFallbackAppServer) {
       this.readOnlyAccountFallbackAppServer = new AppServerProcess({
@@ -1599,6 +1665,70 @@ class AppServerProcess {
   async rpcViaReadOnlyAccountFallback(method: string, params: unknown): Promise<unknown> {
     const fallbackAppServer = await this.getReadOnlyAccountFallbackAppServer()
     return fallbackAppServer.rpc(method, params)
+  }
+
+  private async getSharedAccountProfileFallbackAppServer(): Promise<AppServerProcess> {
+    if (!this.sharedAccountProfileFallbackAppServer) {
+      this.sharedAccountProfileFallbackAppServer = new AppServerProcess({
+        serverMode: 'isolated',
+        enableReadOnlyAccountFallback: false,
+      })
+      this.sharedAccountProfileFallbackAppServer.onNotification((notification) => {
+        void this.handleSharedAccountProfileFallbackNotification(notification)
+      })
+    }
+
+    this.sharedAccountProfileFallbackAppServer.setActiveCodexHomeDir(
+      this.pendingSharedAccountProfileCodexHomeDir ?? this.desktopCodexHomeDir,
+    )
+    return this.sharedAccountProfileFallbackAppServer
+  }
+
+  private disposeSharedAccountProfileFallbackAppServer(): void {
+    this.sharedAccountProfileFallbackAppServer?.dispose()
+    this.sharedAccountProfileFallbackAppServer = null
+  }
+
+  async rpcViaSharedAccountProfileFallback(method: string, params: unknown): Promise<unknown> {
+    const fallbackAppServer = await this.getSharedAccountProfileFallbackAppServer()
+    return fallbackAppServer.rpc(method, params)
+  }
+
+  async handleSharedAccountProfileFallbackNotification(notification: {
+    method: string
+    params: unknown
+  }): Promise<void> {
+    let forwardedNotification = notification
+
+    if (
+      notification.method === 'account/login/completed'
+      && this.pendingSharedAccountProfileCodexHomeDir
+    ) {
+      const params = asRecord(notification.params)
+      if (params?.success === true) {
+        try {
+          const authPayload = await this.readAuthPayloadFromCodexHomeDir(this.pendingSharedAccountProfileCodexHomeDir)
+          if (!authPayload) {
+            throw new Error('Selected shared account profile is missing auth.json after login completed')
+          }
+          await this.writeAuthPayloadToDesktopHome(authPayload)
+          this.pendingSharedAccountProfileCodexHomeDir = null
+          this.disposeSharedAccountProfileFallbackAppServer()
+          this.disposeReadOnlyAccountFallbackAppServer()
+        } catch (error) {
+          forwardedNotification = {
+            method: notification.method,
+            params: {
+              ...(params ?? {}),
+              success: false,
+              error: getErrorMessage(error, 'Failed to sync shared account profile into desktop Codex home'),
+            },
+          }
+        }
+      }
+    }
+
+    this.emitNotification(forwardedNotification)
   }
 
   private getTranscriptionService() {
@@ -2509,6 +2639,10 @@ class AppServerProcess {
       return privateResult
     }
 
+    if (this.shouldUseSharedAccountProfileFallback(method)) {
+      return this.rpcViaSharedAccountProfileFallback(method, params)
+    }
+
     if (
       this.shouldUseReadOnlyAccountFallback(method)
       && this.serverConnectionStatus === 'running_without_shared_endpoint'
@@ -2520,6 +2654,9 @@ class AppServerProcess {
       await this.ensureInitialized()
       return this.call(method, params)
     } catch (error) {
+      if (this.shouldUseSharedAccountProfileFallback(method)) {
+        return this.rpcViaSharedAccountProfileFallback(method, params)
+      }
       if (
         this.shouldUseReadOnlyAccountFallback(method)
         && error instanceof SharedModeAttachError
@@ -2678,6 +2815,7 @@ class AppServerProcess {
 
   dispose(): void {
     this.disposeReadOnlyAccountFallbackAppServer()
+    this.disposeSharedAccountProfileFallbackAppServer()
     if (!this.transport && !this.process) return
 
     const transport = this.transport

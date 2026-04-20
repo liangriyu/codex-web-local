@@ -725,7 +725,7 @@ test('concurrent ensureInitialized calls only initialize once', async () => {
   })
 })
 
-test('shared session listing follows active account profile after switching', async () => {
+test('shared session listing keeps the desktop session source after switching account profile', async () => {
   await withFreshBridge(async ({ middleware }) => {
     const profilesRes = await invokeMiddleware(
       middleware,
@@ -761,6 +761,16 @@ test('shared session listing follows active account profile after switching', as
       JSON.stringify(baseSharedSnapshot('second-only')),
       'utf8',
     )
+    await writeFile(
+      join(defaultProfile.codexHomeDir, 'auth.json'),
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'default-token' } }, null, 2),
+      'utf8',
+    )
+    await writeFile(
+      join(secondProfile.codexHomeDir, 'auth.json'),
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'second-token' } }, null, 2),
+      'utf8',
+    )
 
     const beforeSwitch = await invokeMiddleware(
       middleware,
@@ -787,8 +797,166 @@ test('shared session listing follows active account profile after switching', as
     )
     assert.equal(afterSwitch.statusCode, 200)
     const afterIds = parseBody(afterSwitch).data.map((snapshot) => snapshot.sessionId)
-    assert.ok(afterIds.includes('second-only'))
-    assert.ok(!afterIds.includes('default-only'))
+    assert.ok(afterIds.includes('default-only'))
+    assert.ok(!afterIds.includes('second-only'))
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode syncs the selected profile auth into the desktop Codex home', async () => {
+  await withFreshBridge(async ({ middleware, tempCodexHome }) => {
+    const profilesRes = await invokeMiddleware(
+      middleware,
+      'GET',
+      '/codex-api/account-profiles',
+    )
+    assert.equal(profilesRes.statusCode, 200)
+    const profilesBody = parseBody(profilesRes)
+    const defaultProfile = profilesBody.data.profiles.find((profile) => profile.id === 'default')
+    assert.ok(defaultProfile)
+
+    const createdRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles',
+      { name: '账号 2' },
+    )
+    assert.equal(createdRes.statusCode, 200)
+    const secondProfile = parseBody(createdRes).data
+    assert.ok(secondProfile?.id)
+    assert.ok(secondProfile?.codexHomeDir)
+
+    const defaultAuth = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: 'default-token',
+      },
+    }, null, 2)
+    const secondAuth = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: 'second-token',
+      },
+    }, null, 2)
+
+    await writeFile(join(defaultProfile.codexHomeDir, 'auth.json'), defaultAuth, 'utf8')
+    await writeFile(join(secondProfile.codexHomeDir, 'auth.json'), secondAuth, 'utf8')
+    await writeFile(join(tempCodexHome, 'auth.json'), defaultAuth, 'utf8')
+
+    const switchRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles/switch',
+      { profileId: secondProfile.id },
+    )
+    assert.equal(switchRes.statusCode, 200)
+    assert.equal(
+      await readFile(join(tempCodexHome, 'auth.json'), 'utf8'),
+      secondAuth,
+    )
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode routes account login start through the selected empty profile home', async () => {
+  await withFreshBridge(async ({ middleware }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const createdRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles',
+      { name: '待登录账号' },
+    )
+    assert.equal(createdRes.statusCode, 200)
+    const createdProfile = parseBody(createdRes).data
+    assert.ok(createdProfile?.id)
+    assert.ok(createdProfile?.codexHomeDir)
+
+    const switchRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles/switch',
+      { profileId: createdProfile.id },
+    )
+    assert.equal(switchRes.statusCode, 200)
+
+    let routedMethod = ''
+    let routedParams = null
+    appServer.rpcViaSharedAccountProfileFallback = async (method, params) => {
+      routedMethod = method
+      routedParams = params
+      return {
+        loginId: 'login-shared-profile',
+        authUrl: 'http://127.0.0.1:1455/auth',
+      }
+    }
+
+    const result = await appServer.rpc('account/login/start', { type: 'chatgpt' })
+    assert.equal(routedMethod, 'account/login/start')
+    assert.deepEqual(routedParams, { type: 'chatgpt' })
+    assert.equal(appServer.pendingSharedAccountProfileCodexHomeDir, createdProfile.codexHomeDir)
+    assert.deepEqual(result, {
+      loginId: 'login-shared-profile',
+      authUrl: 'http://127.0.0.1:1455/auth',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode syncs desktop auth after selected profile login completes', async () => {
+  await withFreshBridge(async ({ middleware, tempCodexHome }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const createdRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles',
+      { name: '待登录账号' },
+    )
+    assert.equal(createdRes.statusCode, 200)
+    const createdProfile = parseBody(createdRes).data
+    assert.ok(createdProfile?.id)
+    assert.ok(createdProfile?.codexHomeDir)
+
+    const switchRes = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/account-profiles/switch',
+      { profileId: createdProfile.id },
+    )
+    assert.equal(switchRes.statusCode, 200)
+
+    const profileAuth = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: 'fresh-profile-token',
+      },
+    }, null, 2)
+    await writeFile(join(createdProfile.codexHomeDir, 'auth.json'), profileAuth, 'utf8')
+
+    await appServer.handleSharedAccountProfileFallbackNotification({
+      method: 'account/login/completed',
+      params: {
+        loginId: 'login-shared-profile',
+        success: true,
+      },
+    })
+
+    assert.equal(
+      await readFile(join(tempCodexHome, 'auth.json'), 'utf8'),
+      profileAuth,
+    )
+    assert.equal(appServer.pendingSharedAccountProfileCodexHomeDir, null)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }, {
+    serverMode: 'shared',
   })
 })
 

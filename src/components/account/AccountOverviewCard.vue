@@ -81,7 +81,7 @@
         {{ primaryActionLabel }}
       </button>
       <button
-        v-if="!isMobileClient && serverConnectionMode === 'isolated'"
+        v-if="!isMobileClient"
         class="account-overview-secondary"
         type="button"
         :disabled="isBusy"
@@ -188,7 +188,7 @@ const primaryActionLabel = computed(() => {
   return t('app.accountCenterChooseMethod')
 })
 
-const showProfileList = computed(() => props.serverConnectionMode === 'isolated' && props.accountProfiles.length > 0)
+const showProfileList = computed(() => props.accountProfiles.length > 0)
 const showSwitchToIsolatedAction = computed(() =>
   props.serverConnectionMode === 'shared' && props.serverConnectionStatus !== 'connected',
 )

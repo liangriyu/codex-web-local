@@ -163,7 +163,9 @@ async function refreshServerConnectionState(): Promise<void> {
   serverConnectionError.value = snapshot.serverConnectionError
 }
 
-const supportsAccountProfiles = computed(() => serverConnectionMode.value === 'isolated')
+const supportsAccountProfiles = computed(() =>
+  serverConnectionMode.value === 'isolated' || serverConnectionMode.value === 'shared',
+)
 
 function getSharedModeConnectionErrorMessage(): string {
   if (serverConnectionMode.value !== 'shared' || serverConnectionStatus.value === 'connected') {
@@ -376,9 +378,6 @@ async function startHostBrowserChatgptLogin(): Promise<void> {
 }
 
 async function createAndSwitchAccountProfile(name: string | null = null): Promise<UiAccountProfile> {
-  if (!supportsAccountProfiles.value) {
-    throw new Error('共享模式下不支持切换账号档案')
-  }
   const created = await createAccountProfile(name)
   await switchAccountProfile(created.id)
   await refreshBootstrap({ refreshToken: false, preserveLoginFlow: true, silent: true })
@@ -446,10 +445,6 @@ async function submitApiKeyLogin(apiKey: string = apiKeyDraft.value): Promise<vo
 }
 
 async function switchToAccountProfile(profileId: string): Promise<void> {
-  if (!supportsAccountProfiles.value) {
-    error.value = '共享模式下不支持切换账号档案'
-    return
-  }
   const normalizedProfileId = profileId.trim()
   if (!normalizedProfileId || normalizedProfileId === activeProfileId.value) {
     return

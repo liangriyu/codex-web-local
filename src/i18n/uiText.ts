@@ -337,8 +337,8 @@ const UI_TEXT = {
     en: 'Mobile sign-in is disabled. Add and sign in accounts on desktop, then switch here.',
   },
   'app.accountCenterSharedModeHint': {
-    zh: '当前是共享模式，这里的登录和退出会直接影响共享的 codex app 当前账号。',
-    en: 'Shared mode is active. Sign-in and sign-out here directly affect the shared codex app account.',
+    zh: '当前是共享模式，这里的登录、退出和切换账号会直接影响共享的 codex app 当前账号；会话历史仍保持当前共享工作区。',
+    en: 'Shared mode is active. Sign-in, sign-out, and account switching here directly affect the shared codex app account, while conversation history stays on the current shared workspace.',
   },
   'app.accountCenterLoginWithApiKey': {
     zh: '使用 API Key 登录',

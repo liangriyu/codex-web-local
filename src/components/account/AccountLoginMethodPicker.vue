@@ -120,9 +120,7 @@ const hint = computed(() =>
     : t('app.accountCenterChooseMethodHint'),
 )
 
-const canCreateProfileDuringLogin = computed(() =>
-  props.serverConnectionMode === 'isolated' && props.availableMethods.includes('chatgpt'),
-)
+const canCreateProfileDuringLogin = computed(() => props.availableMethods.includes('chatgpt'))
 </script>
 
 <style scoped>
