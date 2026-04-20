@@ -332,6 +332,10 @@ const UI_TEXT = {
     zh: '切换',
     en: 'Switch',
   },
+  'app.accountCenterProfileLoggedOut': {
+    zh: '未登录',
+    en: 'Not signed in',
+  },
   'app.accountCenterMobileOnlySwitchHint': {
     zh: '手机端不支持授权登录，请在电脑端新增并登录账号；手机端只做账号切换。',
     en: 'Mobile sign-in is disabled. Add and sign in accounts on desktop, then switch here.',

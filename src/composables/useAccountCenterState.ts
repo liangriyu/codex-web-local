@@ -150,10 +150,34 @@ async function refreshRateLimits(): Promise<void> {
   }
 }
 
-async function refreshAccountProfiles(): Promise<void> {
-  const snapshot = await listAccountProfiles()
-  activeProfileId.value = snapshot.activeProfileId
+function resolveDisplayedActiveProfileId(
+  snapshot: {
+    activeProfileId: string
+    profiles: UiAccountProfile[]
+  },
+  connectionMode: UiServerConnectionMode,
+): string {
+  if (connectionMode === 'shared') {
+    const defaultProfile = snapshot.profiles.find((profile) => profile.id === 'default')
+    return defaultProfile?.id || snapshot.activeProfileId
+  }
+  return snapshot.activeProfileId
+}
+
+function applyAccountProfilesSnapshot(
+  snapshot: {
+    activeProfileId: string
+    profiles: UiAccountProfile[]
+  },
+  connectionMode: UiServerConnectionMode,
+): void {
+  activeProfileId.value = resolveDisplayedActiveProfileId(snapshot, connectionMode)
   accountProfiles.value = snapshot.profiles
+}
+
+async function refreshAccountProfiles(connectionMode: UiServerConnectionMode = serverConnectionMode.value): Promise<void> {
+  const snapshot = await listAccountProfiles()
+  applyAccountProfilesSnapshot(snapshot, connectionMode)
 }
 
 async function refreshServerConnectionState(): Promise<void> {
@@ -234,13 +258,13 @@ async function refreshBootstrap(options: {
   isBootstrapping.value = true
 
   try {
-    await Promise.all([
-      readCodexConfig().then((snapshot) => {
-        forcedLoginMethod.value = snapshot.forcedLoginMethod
-      }),
-      refreshAccountProfiles(),
+    const [configSnapshot, profilesSnapshot] = await Promise.all([
+      readCodexConfig(),
+      listAccountProfiles(),
     ])
+    forcedLoginMethod.value = configSnapshot.forcedLoginMethod
     await refreshServerConnectionState()
+    applyAccountProfilesSnapshot(profilesSnapshot, serverConnectionMode.value)
 
     if (!supportsAccountProfiles.value) {
       accountProfiles.value = []

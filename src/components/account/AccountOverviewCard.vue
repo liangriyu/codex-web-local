@@ -27,14 +27,6 @@
       {{ emptyCopy }}
     </p>
 
-    <p v-if="sharedCodexAppHint" class="account-overview-hint">
-      {{ sharedCodexAppHint }}
-    </p>
-
-    <p v-if="sharedModeFailureHint" class="account-overview-hint account-overview-hint-warning">
-      {{ sharedModeFailureHint }}
-    </p>
-
     <div v-if="rateLimitSnapshot" class="account-overview-quota">
       <p class="account-overview-quota-title">{{ t('app.accountCenterQuotaTitle') }}</p>
       <div class="account-overview-quota-grid">
@@ -193,31 +185,41 @@ const showSwitchToIsolatedAction = computed(() =>
   props.serverConnectionMode === 'shared' && props.serverConnectionStatus !== 'connected',
 )
 
-const sharedCodexAppHint = computed(() =>
-  props.serverConnectionMode === 'shared'
-    ? t('app.accountCenterSharedModeHint')
-    : '',
-)
-
-const sharedModeFailureHint = computed(() => {
-  if (props.serverConnectionMode !== 'shared') return ''
-  if (props.serverConnectionStatus === 'unavailable') {
-    return t('app.sharedModeUnavailableHint')
-  }
-  if (props.serverConnectionStatus === 'running_without_shared_endpoint') {
-    return t('app.sharedModeRunningWithoutEndpointHint')
-  }
-  if (props.serverConnectionStatus === 'attach_failed') {
-    return t('app.sharedModeAttachFailedHint')
-  }
-  return ''
-})
-
 function profileMetaText(profile: UiAccountProfile): string {
+  if (props.serverConnectionMode === 'shared') {
+    if (profile.email) {
+      return profile.email
+    }
+    if (profile.authMode === 'apiKey') {
+      return 'API Key'
+    }
+    if (!profile.hasAuth) {
+      return t('app.accountCenterProfileLoggedOut')
+    }
+  }
+
   if (profile.id !== props.activeProfileId) {
+    if (profile.email) {
+      return profile.email
+    }
+    if (profile.authMode === 'apiKey') {
+      return 'API Key'
+    }
+    if (!profile.hasAuth) {
+      return t('app.accountCenterProfileLoggedOut')
+    }
     return props.uiLanguage === 'zh'
       ? '已登录（切换可查看详情）'
       : 'Signed in (switch to view details)'
+  }
+  if (profile.email) {
+    return profile.email
+  }
+  if (profile.authMode === 'apiKey') {
+    return 'API Key'
+  }
+  if (!profile.hasAuth) {
+    return t('app.accountCenterProfileLoggedOut')
   }
   if (props.account?.email) {
     return props.account.email

@@ -269,6 +269,11 @@ function normalizeAccountProfile(value: unknown): UiAccountProfile | null {
     lastUsedAt: typeof row.lastUsedAt === 'string' && row.lastUsedAt.trim().length > 0
       ? row.lastUsedAt.trim()
       : null,
+    email: typeof row.email === 'string' && row.email.trim().length > 0
+      ? row.email.trim()
+      : null,
+    hasAuth: row.hasAuth === true,
+    authMode: normalizeAccountAuthMode(row.authMode),
   }
 }
 

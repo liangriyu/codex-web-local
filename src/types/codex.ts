@@ -149,6 +149,9 @@ export type UiAccountProfile = {
   createdAt: string
   updatedAt: string
   lastUsedAt: string | null
+  email: string | null
+  hasAuth: boolean
+  authMode: UiAccountAuthMode | null
 }
 
 export type UiAccountProfilesSnapshot = {
