@@ -31,6 +31,10 @@
       {{ sharedCodexAppHint }}
     </p>
 
+    <p v-if="sharedModeFailureHint" class="account-overview-hint account-overview-hint-warning">
+      {{ sharedModeFailureHint }}
+    </p>
+
     <div v-if="rateLimitSnapshot" class="account-overview-quota">
       <p class="account-overview-quota-title">{{ t('app.accountCenterQuotaTitle') }}</p>
       <div class="account-overview-quota-grid">
@@ -89,6 +93,15 @@
         {{ t('app.accountCenterRefresh') }}
       </button>
       <button
+        v-if="showSwitchToIsolatedAction"
+        class="account-overview-secondary"
+        type="button"
+        :disabled="isBusy"
+        @click="$emit('switch-to-isolated')"
+      >
+        {{ t('app.sharedModeSwitchToIsolated') }}
+      </button>
+      <button
         v-if="account"
         class="account-overview-secondary account-overview-danger"
         type="button"
@@ -104,7 +117,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { tUi, type UiLanguage } from '../../i18n/uiText'
-import type { UiAccount, UiAccountProfile, UiAccountStatus, UiServerConnectionMode } from '../../types/codex'
+import type { UiAccount, UiAccountProfile, UiAccountStatus, UiServerConnectionMode, UiServerConnectionStatus } from '../../types/codex'
 import type { AccountRateLimitSnapshot } from '../../api/codexGateway'
 
 const props = defineProps<{
@@ -115,6 +128,7 @@ const props = defineProps<{
   accountProfiles: UiAccountProfile[]
   activeProfileId: string
   serverConnectionMode: UiServerConnectionMode
+  serverConnectionStatus: UiServerConnectionStatus
   isMobileClient: boolean
   uiLanguage: UiLanguage
   isBusy?: boolean
@@ -124,6 +138,7 @@ defineEmits<{
   (event: 'show-methods'): void
   (event: 'start-chatgpt-login-new-profile'): void
   (event: 'switch-profile', profileId: string): void
+  (event: 'switch-to-isolated'): void
   (event: 'logout'): void
   (event: 'refresh'): void
 }>()
@@ -174,12 +189,29 @@ const primaryActionLabel = computed(() => {
 })
 
 const showProfileList = computed(() => props.serverConnectionMode === 'isolated' && props.accountProfiles.length > 0)
+const showSwitchToIsolatedAction = computed(() =>
+  props.serverConnectionMode === 'shared' && props.serverConnectionStatus !== 'connected',
+)
 
 const sharedCodexAppHint = computed(() =>
   props.serverConnectionMode === 'shared'
     ? t('app.accountCenterSharedModeHint')
     : '',
 )
+
+const sharedModeFailureHint = computed(() => {
+  if (props.serverConnectionMode !== 'shared') return ''
+  if (props.serverConnectionStatus === 'unavailable') {
+    return t('app.sharedModeUnavailableHint')
+  }
+  if (props.serverConnectionStatus === 'running_without_shared_endpoint') {
+    return t('app.sharedModeRunningWithoutEndpointHint')
+  }
+  if (props.serverConnectionStatus === 'attach_failed') {
+    return t('app.sharedModeAttachFailedHint')
+  }
+  return ''
+})
 
 function profileMetaText(profile: UiAccountProfile): string {
   if (profile.id !== props.activeProfileId) {
@@ -281,6 +313,12 @@ function profileMetaText(profile: UiAccountProfile): string {
   border-color: color-mix(in srgb, var(--color-border-default) 84%, white);
   background: color-mix(in srgb, var(--color-bg-surface) 88%, white);
   color: var(--color-text-secondary);
+}
+
+.account-overview-hint-warning {
+  border-color: color-mix(in srgb, #fdba74 72%, white);
+  background: color-mix(in srgb, #fff7ed 92%, white);
+  color: #9a3412;
 }
 
 .account-overview-quota {

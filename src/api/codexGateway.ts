@@ -299,8 +299,12 @@ function normalizeServerConnectionSnapshot(payload: unknown): UiServerConnection
     ? payload as Record<string, unknown>
     : {}
   const serverConnectionMode = row.serverMode === 'shared' ? 'shared' : 'isolated'
-  const serverConnectionStatus = row.serverConnectionStatus === 'connect_failed'
-    ? 'connect_failed'
+  const serverConnectionStatus = row.serverConnectionStatus === 'unavailable'
+    ? 'unavailable'
+    : row.serverConnectionStatus === 'running_without_shared_endpoint'
+      ? 'running_without_shared_endpoint'
+    : row.serverConnectionStatus === 'attach_failed'
+      ? 'attach_failed'
     : row.serverConnectionStatus === 'connected'
       ? 'connected'
       : 'idle'

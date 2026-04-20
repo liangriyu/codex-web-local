@@ -244,6 +244,22 @@ const UI_TEXT = {
     zh: '账号状态读取失败，请刷新后重试。',
     en: 'Failed to read account status. Refresh and try again.',
   },
+  'app.sharedModeUnavailableHint': {
+    zh: '未检测到可共享的 Codex.app 运行时，请先启动桌面版 Codex.app。',
+    en: 'No shareable Codex.app runtime was detected. Start the desktop Codex app first.',
+  },
+  'app.sharedModeRunningWithoutEndpointHint': {
+    zh: '桌面版 Codex.app 已启动，但当前未暴露可共享入口；账号状态将通过本地服务回退读取。',
+    en: 'The desktop Codex.app is running, but it did not expose a shareable endpoint. Account status is being read through the local fallback service.',
+  },
+  'app.sharedModeAttachFailedHint': {
+    zh: '检测到桌面运行时，但连接共享运行时失败。',
+    en: 'A desktop runtime was detected, but attaching to the shared runtime failed.',
+  },
+  'app.sharedModeSwitchToIsolated': {
+    zh: '切换到 isolated 模式',
+    en: 'Switch to isolated mode',
+  },
   'app.accountCenterQuotaTitle': {
     zh: '额度快照',
     en: 'Quota snapshot',

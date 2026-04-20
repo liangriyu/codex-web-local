@@ -165,6 +165,22 @@ async function refreshServerConnectionState(): Promise<void> {
 
 const supportsAccountProfiles = computed(() => serverConnectionMode.value === 'isolated')
 
+function getSharedModeConnectionErrorMessage(): string {
+  if (serverConnectionMode.value !== 'shared' || serverConnectionStatus.value === 'connected') {
+    return ''
+  }
+  if (serverConnectionStatus.value === 'unavailable') {
+    return '未检测到可共享的 Codex.app 运行时，请先启动桌面版 Codex.app。'
+  }
+  if (serverConnectionStatus.value === 'running_without_shared_endpoint') {
+    return serverConnectionError.value?.trim() || '桌面版 Codex.app 已启动，但当前未暴露可共享入口。'
+  }
+  if (serverConnectionStatus.value === 'attach_failed') {
+    return serverConnectionError.value?.trim() || '检测到桌面运行时，但连接共享运行时失败。'
+  }
+  return serverConnectionError.value?.trim() || '共享模式当前不可用。'
+}
+
 async function refreshAccountSnapshot(options: {
   refreshToken?: boolean
   fallbackAuthMode?: UiAccountAuthMode | null
@@ -216,22 +232,42 @@ async function refreshBootstrap(options: {
   isBootstrapping.value = true
 
   try {
-    const accountReader = options.refreshToken === true ? refreshAccountStatus : getAccountStatus
-    const [accountSnapshot, configSnapshot] = await Promise.all([
-      accountReader(),
-      readCodexConfig(),
+    await Promise.all([
+      readCodexConfig().then((snapshot) => {
+        forcedLoginMethod.value = snapshot.forcedLoginMethod
+      }),
       refreshAccountProfiles(),
-      refreshServerConnectionState(),
     ])
+    await refreshServerConnectionState()
 
-    currentAccount.value = accountSnapshot.account
-    requiresOpenaiAuth.value = accountSnapshot.requiresOpenaiAuth
-    authMode.value = accountSnapshot.authMode
-    forcedLoginMethod.value = configSnapshot.forcedLoginMethod
     if (!supportsAccountProfiles.value) {
       accountProfiles.value = []
       activeProfileId.value = ''
     }
+
+    if (
+      serverConnectionMode.value === 'shared'
+      && serverConnectionStatus.value !== 'connected'
+      && serverConnectionStatus.value !== 'running_without_shared_endpoint'
+    ) {
+      currentAccount.value = null
+      requiresOpenaiAuth.value = false
+      authMode.value = null
+      rateLimitSnapshot.value = null
+      accountStatus.value = 'error'
+      if (options.silent !== true) {
+        error.value = getSharedModeConnectionErrorMessage()
+      }
+      accountCenterView.value = 'overview'
+      return
+    }
+
+    const accountReader = options.refreshToken === true ? refreshAccountStatus : getAccountStatus
+    const accountSnapshot = await accountReader()
+
+    currentAccount.value = accountSnapshot.account
+    requiresOpenaiAuth.value = accountSnapshot.requiresOpenaiAuth
+    authMode.value = accountSnapshot.authMode
 
     if (accountSnapshot.account) {
       await refreshRateLimits()
@@ -255,9 +291,11 @@ async function refreshBootstrap(options: {
       }
     }
   } catch (unknownError) {
+    await refreshServerConnectionState().catch(() => {})
     accountStatus.value = 'error'
     if (options.silent !== true) {
-      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to load account center'
+      error.value = getSharedModeConnectionErrorMessage()
+        || (unknownError instanceof Error ? unknownError.message : 'Failed to load account center')
     }
   } finally {
     isBootstrapping.value = false

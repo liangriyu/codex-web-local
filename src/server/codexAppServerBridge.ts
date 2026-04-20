@@ -22,6 +22,11 @@ import {
 // @ts-ignore - tests import this TypeScript module directly via node:test.
 } from './sharedSessionStore.ts'
 import {
+  discoverDesktopAppServer,
+  type DesktopAppServerEndpoint,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './desktopAppServerDiscovery.ts'
+import {
   readThreadFileChangesFallbackFromSessionPath,
   readThreadFileChangesTimelineFromSessionPath,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
@@ -93,8 +98,20 @@ type PersistedServerRequest = {
   dismissedBy: 'user' | null
 }
 
+type AppServerTransport = {
+  send: (payload: string) => void
+  close: () => void
+  onMessage: (listener: (chunk: string) => void) => void
+  onExit: (listener: (error: Error) => void) => void
+}
+
 type BridgeServerMode = 'shared' | 'isolated'
-type BridgeServerConnectionStatus = 'idle' | 'connected' | 'connect_failed'
+type BridgeServerConnectionStatus =
+  | 'idle'
+  | 'connected'
+  | 'unavailable'
+  | 'running_without_shared_endpoint'
+  | 'attach_failed'
 
 const PERSISTED_SERVER_REQUEST_UNRESOLVED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const PERSISTED_SERVER_REQUEST_RESOLVED_RETENTION_MS = 24 * 60 * 60 * 1000
@@ -117,6 +134,25 @@ const PRIVATE_RPC_METHODS = [
   PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
   PRIVATE_BROWSER_OPEN_METHOD,
 ]
+const READ_ONLY_ACCOUNT_FALLBACK_RPC_METHODS = new Set([
+  'config/read',
+  'account/read',
+  'account/rateLimits/read',
+  'thread/list',
+  'thread/read',
+])
+const SHARED_ENDPOINT_UNAVAILABLE_MESSAGE =
+  'Detected a running Codex desktop app, but it did not expose a shared app-server endpoint.'
+
+function resolveDesktopCodexHomeDir(env: NodeJS.ProcessEnv): string {
+  const explicitDesktopHome = env.CODEX_DESKTOP_CODEX_HOME?.trim()
+  if (explicitDesktopHome) return explicitDesktopHome
+
+  const configuredCodexHome = env.CODEX_HOME?.trim()
+  if (configuredCodexHome) return configuredCodexHome
+
+  return join(homedir(), '.codex')
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -145,6 +181,18 @@ function getErrorMessage(payload: unknown, fallback: string): string {
   }
 
   return fallback
+}
+
+function execFileText(file: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve(stdout)
+    })
+  })
 }
 
 type ThreadFileChangeActionErrorCode =
@@ -186,6 +234,121 @@ function setJson(res: ServerResponse, statusCode: number, payload: unknown): voi
   res.end(JSON.stringify(payload))
 }
 
+function createChildProcessTransport(proc: ChildProcessWithoutNullStreams): AppServerTransport {
+  let handleMessage: ((chunk: string) => void) | null = null
+  let handleExit: ((error: Error) => void) | null = null
+
+  proc.stdout.setEncoding('utf8')
+  proc.stdout.on('data', (chunk: string) => {
+    handleMessage?.(chunk)
+  })
+
+  proc.stderr.setEncoding('utf8')
+  proc.stderr.on('data', () => {
+    // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
+  })
+
+  proc.on('exit', () => {
+    handleExit?.(new Error('codex app-server exited unexpectedly'))
+  })
+
+  return {
+    send(payload: string) {
+      proc.stdin.write(payload)
+    },
+    close() {
+      try {
+        proc.stdin.end()
+      } catch {
+        // ignore close errors on shutdown
+      }
+
+      try {
+        proc.kill('SIGTERM')
+      } catch {
+        // ignore kill errors on shutdown
+      }
+
+      const forceKillTimer = setTimeout(() => {
+        if (!proc.killed) {
+          try {
+            proc.kill('SIGKILL')
+          } catch {
+            // ignore kill errors on shutdown
+          }
+        }
+      }, 1500)
+      forceKillTimer.unref()
+    },
+    onMessage(listener: (chunk: string) => void) {
+      handleMessage = listener
+    },
+    onExit(listener: (error: Error) => void) {
+      handleExit = listener
+    },
+  }
+}
+
+function createWebSocketTransport(endpoint: DesktopAppServerEndpoint): Promise<AppServerTransport> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let handleMessage: ((chunk: string) => void) | null = null
+    let handleExit: ((error: Error) => void) | null = null
+
+    let socket: WebSocket
+    try {
+      socket = new WebSocket(endpoint.url)
+    } catch (error) {
+      reject(new Error(getErrorMessage(error, `Failed to connect to desktop app-server websocket at ${endpoint.url}`)))
+      return
+    }
+
+    const failConnection = (fallback: string, error?: unknown) => {
+      const failure = new Error(getErrorMessage(error, fallback))
+      if (!settled) {
+        settled = true
+        reject(failure)
+        return
+      }
+      handleExit?.(failure)
+    }
+
+    socket.addEventListener('open', () => {
+      if (settled) return
+      settled = true
+      resolve({
+        send(payload: string) {
+          socket.send(payload)
+        },
+        close() {
+          socket.close()
+        },
+        onMessage(listener: (chunk: string) => void) {
+          handleMessage = listener
+        },
+        onExit(listener: (error: Error) => void) {
+          handleExit = listener
+        },
+      })
+    })
+
+    socket.addEventListener('message', (event: MessageEvent) => {
+      const rawData = typeof event.data === 'string'
+        ? event.data
+        : Buffer.from(event.data as ArrayBufferLike).toString('utf8')
+      handleMessage?.(rawData.endsWith('\n') ? rawData : `${rawData}\n`)
+    })
+
+    socket.addEventListener('error', (event: Event) => {
+      failConnection(`Failed to connect to desktop app-server websocket at ${endpoint.url}`, event)
+    })
+
+    socket.addEventListener('close', () => {
+      failConnection('Desktop app-server websocket closed unexpectedly')
+    })
+  })
+}
+
 class PrivateRpcError extends Error {
   readonly code: number
   readonly statusCode: number
@@ -195,6 +358,16 @@ class PrivateRpcError extends Error {
     this.name = 'PrivateRpcError'
     this.code = code
     this.statusCode = statusCode
+  }
+}
+
+class SharedModeAttachError extends Error {
+  readonly connectionStatus: Exclude<BridgeServerConnectionStatus, 'idle' | 'connected'>
+
+  constructor(connectionStatus: Exclude<BridgeServerConnectionStatus, 'idle' | 'connected'>, message: string) {
+    super(message)
+    this.name = 'SharedModeAttachError'
+    this.connectionStatus = connectionStatus
   }
 }
 
@@ -1273,6 +1446,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 class AppServerProcess {
   private process: ChildProcessWithoutNullStreams | null = null
+  private transport: AppServerTransport | null = null
   private initialized = false
   private startPromise: Promise<void> | null = null
   private initializePromise: Promise<void> | null = null
@@ -1295,13 +1469,18 @@ class AppServerProcess {
     model: 'gpt-4o-mini-transcribe',
   }
   private readonly accountProfileStore: AccountProfileStore
+  private readonly enableReadOnlyAccountFallback: boolean
+  private readonly desktopCodexHomeDir: string
   private codexHomeOverride: string | null = null
   private readonly serverMode: BridgeServerMode
   private serverConnectionStatus: BridgeServerConnectionStatus = 'idle'
   private serverConnectionError: string | null = null
+  private readOnlyAccountFallbackAppServer: AppServerProcess | null = null
 
-  constructor(options: { serverMode?: BridgeServerMode } = {}) {
+  constructor(options: { serverMode?: BridgeServerMode; enableReadOnlyAccountFallback?: boolean } = {}) {
     this.serverMode = options.serverMode ?? 'isolated'
+    this.enableReadOnlyAccountFallback = options.enableReadOnlyAccountFallback ?? true
+    this.desktopCodexHomeDir = resolveDesktopCodexHomeDir(process.env)
     this.accountProfileStore = new AccountProfileStore({
       serverMode: this.serverMode,
     })
@@ -1321,12 +1500,20 @@ class AppServerProcess {
 
   private setActiveCodexHomeDir(codexHomeDir: string | null): void {
     const normalized = readText(codexHomeDir)
+    const previous = this.codexHomeOverride
     this.codexHomeOverride = normalized || null
+    if (previous !== this.codexHomeOverride) {
+      this.disposeReadOnlyAccountFallbackAppServer()
+    }
     if (normalized) {
       process.env.CODEX_HOME = normalized
       return
     }
     delete process.env.CODEX_HOME
+  }
+
+  getDesktopCodexHomeDir(): string {
+    return this.desktopCodexHomeDir
   }
 
   getServerConnectionState(): {
@@ -1366,6 +1553,52 @@ class AppServerProcess {
     const profile = await this.accountProfileStore.setActive(profileId)
     this.setActiveCodexHomeDir(profile.codexHomeDir)
     return profile
+  }
+
+  async isDesktopAppProcessRunning(): Promise<boolean> {
+    try {
+      const stdout = await execFileText('ps', ['ax', '-o', 'command='])
+      return stdout.split('\n').some((line) => {
+        const command = line.trim()
+        if (!command) return false
+        return (
+          command.includes('/Applications/Codex.app/Contents/MacOS/Codex')
+          || command.includes('/Applications/Codex.app/Contents/Resources/codex app-server')
+        )
+      })
+    } catch {
+      return false
+    }
+  }
+
+  private shouldUseReadOnlyAccountFallback(method: string): boolean {
+    return (
+      this.enableReadOnlyAccountFallback
+      && this.serverMode === 'shared'
+      && READ_ONLY_ACCOUNT_FALLBACK_RPC_METHODS.has(method)
+    )
+  }
+
+  private async getReadOnlyAccountFallbackAppServer(): Promise<AppServerProcess> {
+    if (!this.readOnlyAccountFallbackAppServer) {
+      this.readOnlyAccountFallbackAppServer = new AppServerProcess({
+        serverMode: 'isolated',
+        enableReadOnlyAccountFallback: false,
+      })
+    }
+
+    this.readOnlyAccountFallbackAppServer.setActiveCodexHomeDir(this.desktopCodexHomeDir)
+    return this.readOnlyAccountFallbackAppServer
+  }
+
+  private disposeReadOnlyAccountFallbackAppServer(): void {
+    this.readOnlyAccountFallbackAppServer?.dispose()
+    this.readOnlyAccountFallbackAppServer = null
+  }
+
+  async rpcViaReadOnlyAccountFallback(method: string, params: unknown): Promise<unknown> {
+    const fallbackAppServer = await this.getReadOnlyAccountFallbackAppServer()
+    return fallbackAppServer.rpc(method, params)
   }
 
   private getTranscriptionService() {
@@ -1504,26 +1737,53 @@ class AppServerProcess {
     return PRIVATE_RPC_NOT_HANDLED
   }
 
-  async connectToExistingAppServer(): Promise<void> {
-    throw new Error('Shared mode attach is not configured yet')
+  async discoverDesktopAppServer() {
+    return discoverDesktopAppServer({
+      env: {
+        ...process.env,
+        CODEX_DESKTOP_CODEX_HOME: this.desktopCodexHomeDir,
+      },
+    })
   }
 
-  async startEmbeddedAppServer(): Promise<void> {
-    await this.ensureActiveProfileLoaded()
-    const codexHomeDir = this.getCurrentCodexHomeDir()
-    const proc = spawn('codex', ['app-server'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: codexHomeDir
-        ? {
-            ...process.env,
-            CODEX_HOME: codexHomeDir,
-          }
-        : process.env,
-    })
-    this.process = proc
+  async createDesktopAppServerTransport(endpoint: DesktopAppServerEndpoint): Promise<AppServerTransport> {
+    if (endpoint.transport !== 'websocket') {
+      throw new Error(`Unsupported desktop app-server transport: ${endpoint.transport}`)
+    }
+    return createWebSocketTransport(endpoint)
+  }
 
-    proc.stdout.setEncoding('utf8')
-    proc.stdout.on('data', (chunk: string) => {
+  async connectToExistingAppServer(): Promise<void> {
+    const discovery = await this.discoverDesktopAppServer()
+    if (discovery.status !== 'available') {
+      if (
+        discovery.status === 'unavailable'
+        && discovery.reason === 'no_enrollment'
+        && await this.isDesktopAppProcessRunning()
+      ) {
+        throw new SharedModeAttachError('running_without_shared_endpoint', SHARED_ENDPOINT_UNAVAILABLE_MESSAGE)
+      }
+      throw new SharedModeAttachError('unavailable', discovery.message)
+    }
+
+    let transport: AppServerTransport
+    try {
+      transport = await this.createDesktopAppServerTransport(discovery.endpoint)
+    } catch (error) {
+      throw new SharedModeAttachError(
+        'attach_failed',
+        getErrorMessage(error, 'Failed to attach shared app-server'),
+      )
+    }
+    this.activateTransport(transport)
+  }
+
+  activateTransport(transport: AppServerTransport, process: ChildProcessWithoutNullStreams | null = null): void {
+    this.transport = transport
+    this.process = process
+    this.readBuffer = ''
+
+    transport.onMessage((chunk: string) => {
       this.readBuffer += chunk
 
       let lineEnd = this.readBuffer.indexOf('\n')
@@ -1539,19 +1799,16 @@ class AppServerProcess {
       }
     })
 
-    proc.stderr.setEncoding('utf8')
-    proc.stderr.on('data', () => {
-      // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
-    })
-
-    proc.on('exit', () => {
-      const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
+    transport.onExit((error: Error) => {
+      if (this.transport !== transport) return
+      const failure = new Error(this.stopping ? 'codex app-server stopped' : getErrorMessage(error, 'codex app-server exited unexpectedly'))
       for (const request of this.pending.values()) {
         request.reject(failure)
       }
 
       this.pending.clear()
       this.pendingServerRequests.clear()
+      this.transport = null
       this.process = null
       this.initialized = false
       this.initializePromise = null
@@ -1561,8 +1818,23 @@ class AppServerProcess {
     })
   }
 
+  async startEmbeddedAppServer(): Promise<void> {
+    await this.ensureActiveProfileLoaded()
+    const codexHomeDir = this.getCurrentCodexHomeDir()
+    const proc = spawn('codex', ['app-server'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: codexHomeDir
+        ? {
+            ...process.env,
+            CODEX_HOME: codexHomeDir,
+          }
+        : process.env,
+    })
+    this.activateTransport(createChildProcessTransport(proc), proc)
+  }
+
   async prepareConnection(): Promise<void> {
-    if (this.process) return
+    if (this.transport) return
 
     if (this.serverMode === 'shared') {
       try {
@@ -1570,7 +1842,9 @@ class AppServerProcess {
         this.serverConnectionStatus = 'connected'
         this.serverConnectionError = null
       } catch (error) {
-        this.serverConnectionStatus = 'connect_failed'
+        this.serverConnectionStatus = error instanceof SharedModeAttachError
+          ? error.connectionStatus
+          : 'attach_failed'
         this.serverConnectionError = getErrorMessage(error, 'Failed to attach shared app-server')
         throw error
       }
@@ -1583,7 +1857,7 @@ class AppServerProcess {
   }
 
   private async start(): Promise<void> {
-    if (this.process) return
+    if (this.transport) return
     if (this.startPromise) {
       await this.startPromise
       return
@@ -1592,7 +1866,7 @@ class AppServerProcess {
     this.startPromise = (async () => {
       this.stopping = false
       await this.prepareConnection()
-      if (!this.process) {
+      if (!this.transport) {
         throw new Error('Shared mode attached without an active transport')
       }
     })()
@@ -1605,11 +1879,11 @@ class AppServerProcess {
   }
 
   private sendLine(payload: Record<string, unknown>): void {
-    if (!this.process) {
+    if (!this.transport) {
       throw new Error('codex app-server is not running')
     }
 
-    this.process.stdin.write(`${JSON.stringify(payload)}\n`)
+    this.transport.send(`${JSON.stringify(payload)}\n`)
   }
 
   private handleLine(line: string): void {
@@ -2235,8 +2509,26 @@ class AppServerProcess {
       return privateResult
     }
 
-    await this.ensureInitialized()
-    return this.call(method, params)
+    if (
+      this.shouldUseReadOnlyAccountFallback(method)
+      && this.serverConnectionStatus === 'running_without_shared_endpoint'
+    ) {
+      return this.rpcViaReadOnlyAccountFallback(method, params)
+    }
+
+    try {
+      await this.ensureInitialized()
+      return this.call(method, params)
+    } catch (error) {
+      if (
+        this.shouldUseReadOnlyAccountFallback(method)
+        && error instanceof SharedModeAttachError
+        && error.connectionStatus === 'running_without_shared_endpoint'
+      ) {
+        return this.rpcViaReadOnlyAccountFallback(method, params)
+      }
+      throw error
+    }
   }
 
   onNotification(listener: (value: { method: string; params: unknown }) => void): () => void {
@@ -2385,10 +2677,12 @@ class AppServerProcess {
   }
 
   dispose(): void {
-    if (!this.process) return
+    this.disposeReadOnlyAccountFallbackAppServer()
+    if (!this.transport && !this.process) return
 
-    const proc = this.process
+    const transport = this.transport
     this.stopping = true
+    this.transport = null
     this.process = null
     this.initialized = false
     this.startPromise = null
@@ -2403,27 +2697,10 @@ class AppServerProcess {
     this.pendingServerRequests.clear()
 
     try {
-      proc.stdin.end()
+      transport?.close()
     } catch {
-      // ignore close errors on shutdown
+      // ignore transport close errors on shutdown
     }
-
-    try {
-      proc.kill('SIGTERM')
-    } catch {
-      // ignore kill errors on shutdown
-    }
-
-    const forceKillTimer = setTimeout(() => {
-      if (!proc.killed) {
-        try {
-          proc.kill('SIGKILL')
-        } catch {
-          // ignore kill errors on shutdown
-        }
-      }
-    }, 1500)
-    forceKillTimer.unref()
   }
 }
 

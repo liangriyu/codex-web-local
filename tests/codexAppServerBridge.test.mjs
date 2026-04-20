@@ -216,14 +216,19 @@ test('shared mode prepares connection by attaching instead of loading active pro
   })
 })
 
-test('shared mode reports attach failures without silently falling back to embedded startup', async () => {
+test('shared mode reports unavailable desktop runtime without silently falling back to embedded startup', async () => {
   await withFreshBridge(async () => {
     const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
     assert.ok(appServer, 'expected shared appServer instance')
 
     let embeddedStartCount = 0
-    appServer.connectToExistingAppServer = async () => {
-      throw new Error('attach unavailable')
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'unavailable',
+      reason: 'no_enrollment',
+      message: 'No persisted desktop app-server enrollment was found.',
+    })
+    appServer.createDesktopAppServerTransport = async () => {
+      throw new Error('transport should not be created when unavailable')
     }
     appServer.startEmbeddedAppServer = async () => {
       embeddedStartCount += 1
@@ -231,14 +236,388 @@ test('shared mode reports attach failures without silently falling back to embed
 
     await assert.rejects(
       appServer.prepareConnection(),
-      /attach unavailable/i,
+      /No persisted desktop app-server enrollment was found/i,
     )
 
     assert.equal(embeddedStartCount, 0)
     assert.deepEqual(appServer.getServerConnectionState(), {
       serverMode: 'shared',
-      serverConnectionStatus: 'connect_failed',
-      serverConnectionError: 'attach unavailable',
+      serverConnectionStatus: 'unavailable',
+      serverConnectionError: 'No persisted desktop app-server enrollment was found.',
+    })
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode reports running_without_shared_endpoint when desktop app is running without enrollment', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    let embeddedStartCount = 0
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'unavailable',
+      reason: 'no_enrollment',
+      message: 'No persisted desktop app-server enrollment was found.',
+    })
+    appServer.isDesktopAppProcessRunning = async () => true
+    appServer.startEmbeddedAppServer = async () => {
+      embeddedStartCount += 1
+    }
+
+    await assert.rejects(
+      appServer.prepareConnection(),
+      /shared app-server endpoint/i,
+    )
+
+    assert.equal(embeddedStartCount, 0)
+    assert.deepEqual(appServer.getServerConnectionState(), {
+      serverMode: 'shared',
+      serverConnectionStatus: 'running_without_shared_endpoint',
+      serverConnectionError: 'Detected a running Codex desktop app, but it did not expose a shared app-server endpoint.',
+    })
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode falls back to sidecar account rpc reads when desktop app is running without a shared endpoint', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    let fallbackCalls = []
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'unavailable',
+      reason: 'no_enrollment',
+      message: 'No persisted desktop app-server enrollment was found.',
+    })
+    appServer.isDesktopAppProcessRunning = async () => true
+    appServer.rpcViaReadOnlyAccountFallback = async (method, params) => {
+      fallbackCalls.push({ method, params })
+      return {
+        account: {
+          type: 'chatgpt',
+          email: 'fallback@example.com',
+          planType: 'plus',
+        },
+        requiresOpenaiAuth: false,
+      }
+    }
+
+    const result = await appServer.rpc('account/read', { refreshToken: false })
+
+    assert.deepEqual(result, {
+      account: {
+        type: 'chatgpt',
+        email: 'fallback@example.com',
+        planType: 'plus',
+      },
+      requiresOpenaiAuth: false,
+    })
+    assert.deepEqual(fallbackCalls, [{
+      method: 'account/read',
+      params: { refreshToken: false },
+    }])
+    assert.deepEqual(appServer.getServerConnectionState(), {
+      serverMode: 'shared',
+      serverConnectionStatus: 'running_without_shared_endpoint',
+      serverConnectionError: 'Detected a running Codex desktop app, but it did not expose a shared app-server endpoint.',
+    })
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode falls back to sidecar thread list reads when desktop app is running without a shared endpoint', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const fallbackCalls = []
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'unavailable',
+      reason: 'no_enrollment',
+      message: 'No persisted desktop app-server enrollment was found.',
+    })
+    appServer.isDesktopAppProcessRunning = async () => true
+    appServer.rpcViaReadOnlyAccountFallback = async (method, params) => {
+      fallbackCalls.push({ method, params })
+      return {
+        data: [{
+          id: 'thread-desktop-1',
+          title: 'Desktop thread',
+        }],
+        nextCursor: null,
+      }
+    }
+
+    const result = await appServer.rpc('thread/list', {
+      archived: false,
+      limit: 100,
+      sortKey: 'updated_at',
+    })
+
+    assert.deepEqual(result, {
+      data: [{
+        id: 'thread-desktop-1',
+        title: 'Desktop thread',
+      }],
+      nextCursor: null,
+    })
+    assert.deepEqual(fallbackCalls, [{
+      method: 'thread/list',
+      params: {
+        archived: false,
+        limit: 100,
+        sortKey: 'updated_at',
+      },
+    }])
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode falls back to sidecar thread reads when desktop app is running without a shared endpoint', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const fallbackCalls = []
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'unavailable',
+      reason: 'no_enrollment',
+      message: 'No persisted desktop app-server enrollment was found.',
+    })
+    appServer.isDesktopAppProcessRunning = async () => true
+    appServer.rpcViaReadOnlyAccountFallback = async (method, params) => {
+      fallbackCalls.push({ method, params })
+      return {
+        thread: {
+          id: 'thread-desktop-1',
+          cwd: '/Users/riyuliang/.codex',
+          path: '/Users/riyuliang/.codex/sessions/desktop.jsonl',
+          turns: [],
+        },
+      }
+    }
+
+    const result = await appServer.rpc('thread/read', {
+      threadId: 'thread-desktop-1',
+      includeTurns: true,
+    })
+
+    assert.deepEqual(result, {
+      thread: {
+        id: 'thread-desktop-1',
+        cwd: '/Users/riyuliang/.codex',
+        path: '/Users/riyuliang/.codex/sessions/desktop.jsonl',
+        turns: [],
+      },
+    })
+    assert.deepEqual(fallbackCalls, [{
+      method: 'thread/read',
+      params: {
+        threadId: 'thread-desktop-1',
+        includeTurns: true,
+      },
+    }])
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode read-only account fallback uses the desktop Codex home instead of the active isolated profile', async () => {
+  await withFreshBridge(async ({ tempCodexHome }) => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const isolatedProfileHome = join(tempCodexHome, 'codex-web-local', 'profiles', 'profile-stale')
+    await mkdir(isolatedProfileHome, { recursive: true })
+    await writeFile(join(tempCodexHome, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: [
+          'header',
+          Buffer.from(JSON.stringify({ email: 'desktop@example.com' })).toString('base64url'),
+          'sig',
+        ].join('.'),
+      },
+    }), 'utf8')
+    await writeFile(join(isolatedProfileHome, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: [
+          'header',
+          Buffer.from(JSON.stringify({ email: 'isolated@example.com' })).toString('base64url'),
+          'sig',
+        ].join('.'),
+      },
+    }), 'utf8')
+
+    appServer.setActiveCodexHomeDir(isolatedProfileHome)
+    assert.equal(appServer.getCurrentCodexHomeDir(), isolatedProfileHome)
+    assert.equal(appServer.getDesktopCodexHomeDir(), tempCodexHome)
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode reports attach_failed when discovery succeeds but transport attach fails', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'available',
+      endpoint: {
+        transport: 'websocket',
+        url: 'ws://127.0.0.1:4217',
+        authToken: null,
+        source: 'state_db',
+        accountId: 'account-test',
+        appServerClientName: 'desktop-codex',
+        serverId: 'server-test',
+        environmentId: 'env-test',
+        serverName: 'Codex Desktop',
+      },
+    })
+    appServer.createDesktopAppServerTransport = async () => {
+      throw new Error('desktop websocket connect failed')
+    }
+
+    await assert.rejects(
+      appServer.prepareConnection(),
+      /desktop websocket connect failed/i,
+    )
+
+    assert.deepEqual(appServer.getServerConnectionState(), {
+      serverMode: 'shared',
+      serverConnectionStatus: 'attach_failed',
+      serverConnectionError: 'desktop websocket connect failed',
+    })
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('bridge can exchange initialize and rpc messages through an injected transport without relying on child stdio', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    const outboundMessages = []
+    let messageHandler = null
+
+    const transport = {
+      send(payload) {
+        outboundMessages.push(payload)
+        const message = JSON.parse(payload)
+        if (message.method === 'initialize') {
+          messageHandler?.(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { capabilities: {} },
+          }) + '\n')
+          return
+        }
+
+        if (message.method === 'thread/list') {
+          messageHandler?.(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { data: [] },
+          }) + '\n')
+        }
+      },
+      close() {},
+      onMessage(listener) {
+        messageHandler = listener
+      },
+      onExit() {},
+    }
+
+    appServer.activateTransport(transport)
+
+    const result = await appServer.rpc('thread/list', { cursor: null })
+
+    assert.deepEqual(result, { data: [] })
+    assert.equal(outboundMessages.length, 2)
+    assert.match(outboundMessages[0], /"method":"initialize"/)
+    assert.match(outboundMessages[1], /"method":"thread\/list"/)
+  }, {
+    serverMode: 'shared',
+  })
+})
+
+test('shared mode attaches to a discovered desktop transport without starting embedded app-server', async () => {
+  await withFreshBridge(async () => {
+    const appServer = globalThis.__codexRemoteSharedBridge__?.appServer
+    assert.ok(appServer, 'expected shared appServer instance')
+
+    let embeddedStartCount = 0
+    let transportCreateCount = 0
+    let messageHandler = null
+
+    const transport = {
+      send(payload) {
+        const message = JSON.parse(payload)
+        if (message.method === 'initialize') {
+          messageHandler?.(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { capabilities: {} },
+          }) + '\n')
+          return
+        }
+
+        if (message.method === 'thread/list') {
+          messageHandler?.(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { data: [] },
+          }) + '\n')
+        }
+      },
+      close() {},
+      onMessage(listener) {
+        messageHandler = listener
+      },
+      onExit() {},
+    }
+
+    appServer.discoverDesktopAppServer = async () => ({
+      status: 'available',
+      endpoint: {
+        transport: 'websocket',
+        url: 'ws://127.0.0.1:4217',
+        authToken: null,
+        source: 'state_db',
+        accountId: 'account-test',
+        appServerClientName: 'desktop-codex',
+        serverId: 'server-test',
+        environmentId: 'env-test',
+        serverName: 'Codex Desktop',
+      },
+    })
+    appServer.createDesktopAppServerTransport = async () => {
+      transportCreateCount += 1
+      return transport
+    }
+    appServer.startEmbeddedAppServer = async () => {
+      embeddedStartCount += 1
+    }
+
+    const result = await appServer.rpc('thread/list', { cursor: null })
+
+    assert.deepEqual(result, { data: [] })
+    assert.equal(transportCreateCount, 1)
+    assert.equal(embeddedStartCount, 0)
+    assert.deepEqual(appServer.getServerConnectionState(), {
+      serverMode: 'shared',
+      serverConnectionStatus: 'connected',
+      serverConnectionError: null,
     })
   }, {
     serverMode: 'shared',
