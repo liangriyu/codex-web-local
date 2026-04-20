@@ -149,6 +149,9 @@ export type UiAccountProfile = {
   createdAt: string
   updatedAt: string
   lastUsedAt: string | null
+  email: string | null
+  hasAuth: boolean
+  authMode: UiAccountAuthMode | null
 }
 
 export type UiAccountProfilesSnapshot = {
@@ -157,7 +160,12 @@ export type UiAccountProfilesSnapshot = {
 }
 
 export type UiServerConnectionMode = 'shared' | 'isolated'
-export type UiServerConnectionStatus = 'idle' | 'connected' | 'connect_failed'
+export type UiServerConnectionStatus =
+  | 'idle'
+  | 'connected'
+  | 'unavailable'
+  | 'running_without_shared_endpoint'
+  | 'attach_failed'
 
 export type UiServerConnectionSnapshot = {
   serverConnectionMode: UiServerConnectionMode

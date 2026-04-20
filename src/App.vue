@@ -313,6 +313,7 @@
     :account-profiles="accountProfiles"
     :active-profile-id="activeProfileId"
     :server-connection-mode="serverConnectionMode"
+    :server-connection-status="serverConnectionStatus"
     :is-mobile-client="isMobileClient"
     :available-methods="availableLoginMethods"
     :view="accountCenterView"
@@ -330,6 +331,7 @@
     @start-chatgpt-login="onStartChatgptLogin"
     @start-chatgpt-login-new-profile="onStartChatgptLoginNewProfile"
     @switch-profile="onSwitchAccountProfile"
+    @switch-to-isolated="onSwitchToIsolatedMode"
     @update-api-key="onUpdateAccountApiKey"
     @submit-api-key="onSubmitAccountApiKey"
     @cancel-login="onCancelAccountLogin"
@@ -588,13 +590,17 @@ const sidebarAccountSummary = computed(() => {
   return t('app.accountCenterStatusLoggedOut')
 })
 const accountCenterRuntimeSummary = computed(() => {
-  if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'connect_failed') {
+  if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'unavailable') {
+    return t('app.sharedModeUnavailableHint')
+  }
+  if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'running_without_shared_endpoint') {
+    return serverConnectionError.value?.trim() || t('app.sharedModeRunningWithoutEndpointHint')
+  }
+  if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'attach_failed') {
     if (uiLanguage.value === 'zh') {
-      return '共享模式连接失败，当前未进入强共享'
+      return serverConnectionError.value?.trim() || t('app.sharedModeAttachFailedHint')
     }
-    return serverConnectionError.value
-      ? `Shared mode failed to connect: ${serverConnectionError.value}`
-      : 'Shared mode failed to connect; strong sharing is not active.'
+    return serverConnectionError.value?.trim() || t('app.sharedModeAttachFailedHint')
   }
   if (serverConnectionMode.value === 'shared' && serverConnectionStatus.value === 'connected') {
     return uiLanguage.value === 'zh'
@@ -864,6 +870,12 @@ function onReopenAccountAuth(): void {
 
 function onRefreshAccountCenter(): void {
   void refreshAccountCenter({ refreshToken: true })
+}
+
+function onSwitchToIsolatedMode(): void {
+  accountCenterError.value = uiLanguage.value === 'zh'
+    ? '当前版本不支持页面内热切换。请在终端重启为 isolated 模式：node dist-cli/index.js --host 127.0.0.1 --port 3000 --password landy2026 --server-mode isolated --daemon'
+    : 'Hot-switching in-page is not supported yet. Restart in isolated mode from the terminal: node dist-cli/index.js --host 127.0.0.1 --port 3000 --password landy2026 --server-mode isolated --daemon'
 }
 
 function onLogoutAccount(): void {

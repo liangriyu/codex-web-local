@@ -15,12 +15,9 @@
     <p v-if="isMobileClient" class="account-method-picker-mobile-note">
       {{ t('app.accountCenterMobileOnlySwitchHint') }}
     </p>
-    <p v-else-if="serverConnectionMode === 'shared'" class="account-method-picker-mobile-note">
-      {{ t('app.accountCenterSharedModeHint') }}
-    </p>
 
     <form
-      v-else-if="loginFlow === 'api_key_form'"
+      v-if="loginFlow === 'api_key_form'"
       class="account-method-picker-form"
       @submit.prevent="$emit('submit-api-key')"
     >
@@ -120,9 +117,7 @@ const hint = computed(() =>
     : t('app.accountCenterChooseMethodHint'),
 )
 
-const canCreateProfileDuringLogin = computed(() =>
-  props.serverConnectionMode === 'isolated' && props.availableMethods.includes('chatgpt'),
-)
+const canCreateProfileDuringLogin = computed(() => props.availableMethods.includes('chatgpt'))
 </script>
 
 <style scoped>

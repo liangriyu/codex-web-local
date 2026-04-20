@@ -51,11 +51,15 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   app.use(bridge)
 
   // 3. Static files from Vue build
-  app.use(express.static(distDir))
+  app.use(express.static(distDir, {
+    dotfiles: 'allow',
+  }))
 
   // 4. SPA fallback
   app.use((_req, res) => {
-    res.sendFile(join(distDir, 'index.html'))
+    res.sendFile(join(distDir, 'index.html'), {
+      dotfiles: 'allow',
+    })
   })
 
   return {

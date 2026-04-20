@@ -10,6 +10,9 @@ export type AccountProfile = {
   createdAt: string
   updatedAt: string
   lastUsedAt: string | null
+  email?: string | null
+  hasAuth?: boolean
+  authMode?: 'chatgpt' | 'apiKey' | null
 }
 
 type PersistedAccountProfiles = {
@@ -67,6 +70,7 @@ type ProfileAuthSummary = {
   hasAuth: boolean
   email: string | null
   authMode: 'chatgpt' | 'apiKey' | null
+  authFingerprint: string | null
 }
 
 function getBaseCodexHomeDir(): string {
@@ -336,7 +340,7 @@ export class AccountProfileStore {
         const raw = await readFile(authPath, 'utf8')
         const parsed = asRecord(JSON.parse(raw))
         if (!parsed) {
-          return { hasAuth: false, email: null, authMode: null }
+          return { hasAuth: false, email: null, authMode: null, authFingerprint: null }
         }
 
         const authModeRaw = readText(parsed.auth_mode).toLowerCase()
@@ -362,31 +366,39 @@ export class AccountProfileStore {
           hasAuth: hasApiKey || hasTokenMaterial || authMode !== null,
           email,
           authMode,
+          authFingerprint: raw.trim() || null,
         }
       } catch {
-        return { hasAuth: false, email: null, authMode: null }
+        return { hasAuth: false, email: null, authMode: null, authFingerprint: null }
       }
     }
 
     const visibleRows = await Promise.all(snapshot.profiles.map(async (profile) => {
       const authSummary = await readProfileAuthSummary(profile)
-      const isActive = profile.id === snapshot.activeProfileId
       const accountSuffix = authSummary.email
         ? authSummary.email
         : (authSummary.authMode === 'apiKey' ? 'API Key' : '')
-      const decoratedName = (!isActive && accountSuffix && !profile.name.includes(accountSuffix))
+      const decoratedName = (accountSuffix && !profile.name.includes(accountSuffix))
         ? `${profile.name} · ${accountSuffix}`
         : profile.name
-      const decoratedProfile = decoratedName === profile.name
-        ? profile
-        : { ...profile, name: decoratedName }
+      const decoratedProfile: AccountProfile = {
+        ...profile,
+        name: decoratedName,
+        email: authSummary.email,
+        hasAuth: authSummary.hasAuth,
+        authMode: authSummary.authMode,
+      }
 
       if (profile.id === snapshot.activeProfileId) {
-        return { profile: decoratedProfile, visible: true }
+        return { profile: decoratedProfile, visible: true, authSummary }
+      }
+      if (this.serverMode === 'shared') {
+        return { profile: decoratedProfile, visible: true, authSummary }
       }
       return {
         profile: decoratedProfile,
         visible: authSummary.hasAuth,
+        authSummary,
       }
     }))
 
@@ -394,6 +406,16 @@ export class AccountProfileStore {
       activeProfileId: snapshot.activeProfileId,
       profiles: visibleRows
         .filter((row) => row.visible)
+        .filter((row) => {
+          if (this.serverMode !== 'shared') return true
+          if (row.profile.id === DEFAULT_PROFILE_ID) return true
+
+          const defaultRow = visibleRows.find((candidate) => candidate.profile.id === DEFAULT_PROFILE_ID) ?? null
+          const defaultFingerprint = defaultRow?.authSummary.authFingerprint ?? null
+          if (!defaultFingerprint) return true
+
+          return row.authSummary.authFingerprint !== defaultFingerprint
+        })
         .map((row) => row.profile),
     }
   }

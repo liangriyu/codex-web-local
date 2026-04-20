@@ -150,10 +150,34 @@ async function refreshRateLimits(): Promise<void> {
   }
 }
 
-async function refreshAccountProfiles(): Promise<void> {
-  const snapshot = await listAccountProfiles()
-  activeProfileId.value = snapshot.activeProfileId
+function resolveDisplayedActiveProfileId(
+  snapshot: {
+    activeProfileId: string
+    profiles: UiAccountProfile[]
+  },
+  connectionMode: UiServerConnectionMode,
+): string {
+  if (connectionMode === 'shared') {
+    const defaultProfile = snapshot.profiles.find((profile) => profile.id === 'default')
+    return defaultProfile?.id || snapshot.activeProfileId
+  }
+  return snapshot.activeProfileId
+}
+
+function applyAccountProfilesSnapshot(
+  snapshot: {
+    activeProfileId: string
+    profiles: UiAccountProfile[]
+  },
+  connectionMode: UiServerConnectionMode,
+): void {
+  activeProfileId.value = resolveDisplayedActiveProfileId(snapshot, connectionMode)
   accountProfiles.value = snapshot.profiles
+}
+
+async function refreshAccountProfiles(connectionMode: UiServerConnectionMode = serverConnectionMode.value): Promise<void> {
+  const snapshot = await listAccountProfiles()
+  applyAccountProfilesSnapshot(snapshot, connectionMode)
 }
 
 async function refreshServerConnectionState(): Promise<void> {
@@ -163,7 +187,25 @@ async function refreshServerConnectionState(): Promise<void> {
   serverConnectionError.value = snapshot.serverConnectionError
 }
 
-const supportsAccountProfiles = computed(() => serverConnectionMode.value === 'isolated')
+const supportsAccountProfiles = computed(() =>
+  serverConnectionMode.value === 'isolated' || serverConnectionMode.value === 'shared',
+)
+
+function getSharedModeConnectionErrorMessage(): string {
+  if (serverConnectionMode.value !== 'shared' || serverConnectionStatus.value === 'connected') {
+    return ''
+  }
+  if (serverConnectionStatus.value === 'unavailable') {
+    return '未检测到可共享的 Codex.app 运行时，请先启动桌面版 Codex.app。'
+  }
+  if (serverConnectionStatus.value === 'running_without_shared_endpoint') {
+    return serverConnectionError.value?.trim() || '桌面版 Codex.app 已启动，但当前未暴露可共享入口。'
+  }
+  if (serverConnectionStatus.value === 'attach_failed') {
+    return serverConnectionError.value?.trim() || '检测到桌面运行时，但连接共享运行时失败。'
+  }
+  return serverConnectionError.value?.trim() || '共享模式当前不可用。'
+}
 
 async function refreshAccountSnapshot(options: {
   refreshToken?: boolean
@@ -216,22 +258,42 @@ async function refreshBootstrap(options: {
   isBootstrapping.value = true
 
   try {
-    const accountReader = options.refreshToken === true ? refreshAccountStatus : getAccountStatus
-    const [accountSnapshot, configSnapshot] = await Promise.all([
-      accountReader(),
+    const [configSnapshot, profilesSnapshot] = await Promise.all([
       readCodexConfig(),
-      refreshAccountProfiles(),
-      refreshServerConnectionState(),
+      listAccountProfiles(),
     ])
-
-    currentAccount.value = accountSnapshot.account
-    requiresOpenaiAuth.value = accountSnapshot.requiresOpenaiAuth
-    authMode.value = accountSnapshot.authMode
     forcedLoginMethod.value = configSnapshot.forcedLoginMethod
+    await refreshServerConnectionState()
+    applyAccountProfilesSnapshot(profilesSnapshot, serverConnectionMode.value)
+
     if (!supportsAccountProfiles.value) {
       accountProfiles.value = []
       activeProfileId.value = ''
     }
+
+    if (
+      serverConnectionMode.value === 'shared'
+      && serverConnectionStatus.value !== 'connected'
+      && serverConnectionStatus.value !== 'running_without_shared_endpoint'
+    ) {
+      currentAccount.value = null
+      requiresOpenaiAuth.value = false
+      authMode.value = null
+      rateLimitSnapshot.value = null
+      accountStatus.value = 'error'
+      if (options.silent !== true) {
+        error.value = getSharedModeConnectionErrorMessage()
+      }
+      accountCenterView.value = 'overview'
+      return
+    }
+
+    const accountReader = options.refreshToken === true ? refreshAccountStatus : getAccountStatus
+    const accountSnapshot = await accountReader()
+
+    currentAccount.value = accountSnapshot.account
+    requiresOpenaiAuth.value = accountSnapshot.requiresOpenaiAuth
+    authMode.value = accountSnapshot.authMode
 
     if (accountSnapshot.account) {
       await refreshRateLimits()
@@ -255,9 +317,11 @@ async function refreshBootstrap(options: {
       }
     }
   } catch (unknownError) {
+    await refreshServerConnectionState().catch(() => {})
     accountStatus.value = 'error'
     if (options.silent !== true) {
-      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to load account center'
+      error.value = getSharedModeConnectionErrorMessage()
+        || (unknownError instanceof Error ? unknownError.message : 'Failed to load account center')
     }
   } finally {
     isBootstrapping.value = false
@@ -338,9 +402,6 @@ async function startHostBrowserChatgptLogin(): Promise<void> {
 }
 
 async function createAndSwitchAccountProfile(name: string | null = null): Promise<UiAccountProfile> {
-  if (!supportsAccountProfiles.value) {
-    throw new Error('共享模式下不支持切换账号档案')
-  }
   const created = await createAccountProfile(name)
   await switchAccountProfile(created.id)
   await refreshBootstrap({ refreshToken: false, preserveLoginFlow: true, silent: true })
@@ -408,10 +469,6 @@ async function submitApiKeyLogin(apiKey: string = apiKeyDraft.value): Promise<vo
 }
 
 async function switchToAccountProfile(profileId: string): Promise<void> {
-  if (!supportsAccountProfiles.value) {
-    error.value = '共享模式下不支持切换账号档案'
-    return
-  }
   const normalizedProfileId = profileId.trim()
   if (!normalizedProfileId || normalizedProfileId === activeProfileId.value) {
     return

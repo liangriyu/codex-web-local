@@ -27,12 +27,14 @@
             :account-profiles="accountProfiles"
             :active-profile-id="activeProfileId"
             :server-connection-mode="serverConnectionMode"
+            :server-connection-status="serverConnectionStatus"
             :is-mobile-client="isMobileClient"
             :ui-language="uiLanguage"
             :is-busy="isBusy"
             @show-methods="$emit('show-methods')"
             @start-chatgpt-login-new-profile="$emit('start-chatgpt-login-new-profile')"
             @switch-profile="$emit('switch-profile', $event)"
+            @switch-to-isolated="$emit('switch-to-isolated')"
             @logout="$emit('logout')"
             @refresh="$emit('refresh')"
           />
@@ -88,6 +90,7 @@ import type {
   UiAccountLoginFlow,
   UiAccountStatus,
   UiServerConnectionMode,
+  UiServerConnectionStatus,
 } from '../../types/codex'
 import type { AccountRateLimitSnapshot } from '../../api/codexGateway'
 import AccountOverviewCard from './AccountOverviewCard.vue'
@@ -103,6 +106,7 @@ const props = defineProps<{
   accountProfiles: UiAccountProfile[]
   activeProfileId: string
   serverConnectionMode: UiServerConnectionMode
+  serverConnectionStatus: UiServerConnectionStatus
   isMobileClient: boolean
   availableMethods: Array<'chatgpt' | 'apiKey'>
   view: UiAccountCenterView
@@ -123,6 +127,7 @@ defineEmits<{
   (event: 'start-chatgpt-login'): void
   (event: 'start-chatgpt-login-new-profile'): void
   (event: 'switch-profile', profileId: string): void
+  (event: 'switch-to-isolated'): void
   (event: 'update-api-key', value: string): void
   (event: 'submit-api-key'): void
   (event: 'cancel-login'): void

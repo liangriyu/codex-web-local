@@ -248,6 +248,114 @@ test('account profile store skips conversation artifact sync in shared mode', as
   }
 })
 
+test('account profile store shows all shared profiles and keeps profile auth summaries distinct from desktop auth', async () => {
+  const previousCodexHome = process.env.CODEX_HOME
+  const testCodexHome = await mkdtemp(join(tmpdir(), 'codex-web-local-profiles-shared-visible-'))
+  process.env.CODEX_HOME = testCodexHome
+
+  try {
+    const store = new AccountProfileStore({ serverMode: 'shared' })
+    const initial = await store.list()
+    const defaultProfile = initial.profiles.find((profile) => profile.id === 'default')
+    assert.ok(defaultProfile)
+
+    const profile2 = await store.create('账号 2')
+    const profile3 = await store.create('账号 3')
+
+    const defaultPayload = Buffer
+      .from(JSON.stringify({ email: 'desktop@example.com' }), 'utf8')
+      .toString('base64url')
+    const profile3Payload = Buffer
+      .from(JSON.stringify({ email: 'profile3@example.com' }), 'utf8')
+      .toString('base64url')
+
+    await writeFile(join(defaultProfile.codexHomeDir, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: `header.${defaultPayload}.signature`,
+      },
+    }), 'utf8')
+    await writeFile(join(profile3.codexHomeDir, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: `header.${profile3Payload}.signature`,
+      },
+    }), 'utf8')
+    await store.setActive(profile3.id)
+
+    const visible = await store.listVisible()
+    assert.equal(visible.profiles.length, 3)
+
+    const defaultVisible = visible.profiles.find((profile) => profile.id === 'default')
+    const profile2Visible = visible.profiles.find((profile) => profile.id === profile2.id)
+    const profile3Visible = visible.profiles.find((profile) => profile.id === profile3.id)
+
+    assert.ok(defaultVisible)
+    assert.ok(profile2Visible)
+    assert.ok(profile3Visible)
+    assert.equal(defaultVisible.email, 'desktop@example.com')
+    assert.equal(profile2Visible.email, null)
+    assert.equal(profile2Visible.hasAuth, false)
+    assert.equal(profile3Visible.email, 'profile3@example.com')
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME
+    } else {
+      process.env.CODEX_HOME = previousCodexHome
+    }
+  }
+})
+
+test('account profile store hides shared profiles that duplicate the default desktop account auth', async () => {
+  const previousCodexHome = process.env.CODEX_HOME
+  const testCodexHome = await mkdtemp(join(tmpdir(), 'codex-web-local-profiles-shared-dedupe-'))
+  process.env.CODEX_HOME = testCodexHome
+
+  try {
+    const store = new AccountProfileStore({ serverMode: 'shared' })
+    const initial = await store.list()
+    const defaultProfile = initial.profiles.find((profile) => profile.id === 'default')
+    assert.ok(defaultProfile)
+
+    const profile2 = await store.create('账号 2')
+    const profile3 = await store.create('账号 3')
+
+    const duplicatedPayload = Buffer
+      .from(JSON.stringify({ email: 'duplicated@example.com' }), 'utf8')
+      .toString('base64url')
+    const sharedAuthPayload = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: `header.${duplicatedPayload}.signature`,
+      },
+    })
+
+    await writeFile(join(defaultProfile.codexHomeDir, 'auth.json'), sharedAuthPayload, 'utf8')
+    await writeFile(join(profile3.codexHomeDir, 'auth.json'), sharedAuthPayload, 'utf8')
+
+    const visible = await store.listVisible()
+    const visibleIds = visible.profiles.map((profile) => profile.id)
+    const defaultVisible = visible.profiles.find((profile) => profile.id === 'default')
+    const profile2Visible = visible.profiles.find((profile) => profile.id === profile2.id)
+    const profile3Visible = visible.profiles.find((profile) => profile.id === profile3.id)
+
+    assert.ok(visibleIds.includes('default'))
+    assert.ok(visibleIds.includes(profile2.id))
+    assert.ok(!visibleIds.includes(profile3.id))
+    assert.ok(defaultVisible)
+    assert.ok(profile2Visible)
+    assert.equal(defaultVisible.email, 'duplicated@example.com')
+    assert.equal(profile2Visible.email, null)
+    assert.equal(profile3Visible, undefined)
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME
+    } else {
+      process.env.CODEX_HOME = previousCodexHome
+    }
+  }
+})
+
 test('bridge exposes account profile management endpoints', async () => {
   const bridge = await read('../src/server/codexAppServerBridge.ts')
 

@@ -244,6 +244,22 @@ const UI_TEXT = {
     zh: '账号状态读取失败，请刷新后重试。',
     en: 'Failed to read account status. Refresh and try again.',
   },
+  'app.sharedModeUnavailableHint': {
+    zh: '未检测到可共享的 Codex.app 运行时，请先启动桌面版 Codex.app。',
+    en: 'No shareable Codex.app runtime was detected. Start the desktop Codex app first.',
+  },
+  'app.sharedModeRunningWithoutEndpointHint': {
+    zh: '桌面版 Codex.app 已启动，但当前未暴露可共享入口；账号状态将通过本地服务回退读取。',
+    en: 'The desktop Codex.app is running, but it did not expose a shareable endpoint. Account status is being read through the local fallback service.',
+  },
+  'app.sharedModeAttachFailedHint': {
+    zh: '检测到桌面运行时，但连接共享运行时失败。',
+    en: 'A desktop runtime was detected, but attaching to the shared runtime failed.',
+  },
+  'app.sharedModeSwitchToIsolated': {
+    zh: '切换到 isolated 模式',
+    en: 'Switch to isolated mode',
+  },
   'app.accountCenterQuotaTitle': {
     zh: '额度快照',
     en: 'Quota snapshot',
@@ -316,13 +332,17 @@ const UI_TEXT = {
     zh: '切换',
     en: 'Switch',
   },
+  'app.accountCenterProfileLoggedOut': {
+    zh: '未登录',
+    en: 'Not signed in',
+  },
   'app.accountCenterMobileOnlySwitchHint': {
     zh: '手机端不支持授权登录，请在电脑端新增并登录账号；手机端只做账号切换。',
     en: 'Mobile sign-in is disabled. Add and sign in accounts on desktop, then switch here.',
   },
   'app.accountCenterSharedModeHint': {
-    zh: '当前是共享模式，这里的登录和退出会直接影响共享的 codex app 当前账号。',
-    en: 'Shared mode is active. Sign-in and sign-out here directly affect the shared codex app account.',
+    zh: '当前是共享模式，这里的登录、退出和切换账号会直接影响共享的 codex app 当前账号；会话历史仍保持当前共享工作区。',
+    en: 'Shared mode is active. Sign-in, sign-out, and account switching here directly affect the shared codex app account, while conversation history stays on the current shared workspace.',
   },
   'app.accountCenterLoginWithApiKey': {
     zh: '使用 API Key 登录',
