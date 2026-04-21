@@ -234,6 +234,19 @@ class PrivateRpcError extends Error {
   }
 }
 
+function mapLoginStartErrorToPrivateRpcError(method: string, error: unknown): PrivateRpcError | null {
+  if (method !== 'account/login/start') return null
+  const message = getErrorMessage(error, '').toLowerCase()
+  if (!message.includes('failed to start login server')) {
+    return null
+  }
+  return new PrivateRpcError(
+    -32020,
+    '当前运行环境无法启动账号登录回调服务，请在具备本地回调端口权限的环境中重试。',
+    409,
+  )
+}
+
 function normalizePreviewPath(rawPath: string): string {
   const trimmed = rawPath.trim()
   if (!trimmed) return ''
@@ -3012,6 +3025,11 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
         } catch (error) {
           if (error instanceof PrivateRpcError) {
             setJson(res, error.statusCode, { error: { code: error.code, message: error.message } })
+            return
+          }
+          const mappedError = mapLoginStartErrorToPrivateRpcError(body.method, error)
+          if (mappedError) {
+            setJson(res, mappedError.statusCode, { error: { code: mappedError.code, message: mappedError.message } })
             return
           }
           throw error

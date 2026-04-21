@@ -182,6 +182,56 @@ async function withFreshBridge(fn) {
   }
 }
 
+test('account login start returns actionable 409 when callback server cannot start', async () => {
+  const globalScope = globalThis
+  const previousSharedBridge = globalScope.__codexRemoteSharedBridge__
+  const fakeAppServer = {
+    setVoiceInputFallbackConfig() {},
+    async rpc(method) {
+      assert.equal(method, 'account/login/start')
+      throw new Error('failed to start login server: Operation not permitted (os error 1)')
+    },
+    triggerSharedSessionSnapshotSync() {},
+    onNotification() {
+      return () => {}
+    },
+    dispose() {},
+  }
+  const fakeMethodCatalog = {
+    async listMethods() {
+      return []
+    },
+    async listNotificationMethods() {
+      return []
+    },
+  }
+  globalScope.__codexRemoteSharedBridge__ = {
+    appServer: fakeAppServer,
+    methodCatalog: fakeMethodCatalog,
+  }
+
+  const middleware = createCodexBridgeMiddleware()
+
+  try {
+    const res = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/rpc',
+      { method: 'account/login/start', params: { type: 'chatgpt' } },
+    )
+    assert.equal(res.statusCode, 409)
+    const body = parseBody(res)
+    assert.equal(body.error.code, -32020)
+    assert.match(body.error.message, /无法启动账号登录回调服务/)
+  } finally {
+    middleware.dispose()
+    delete globalScope.__codexRemoteSharedBridge__
+    if (previousSharedBridge) {
+      globalScope.__codexRemoteSharedBridge__ = previousSharedBridge
+    }
+  }
+})
+
 test('git push status reports upstream metadata and push succeeds', async () => {
   const { rootDir, repoDir } = await createBareRemoteWorkspace()
 
