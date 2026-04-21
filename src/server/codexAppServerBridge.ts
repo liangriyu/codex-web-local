@@ -26,6 +26,19 @@ import {
   readThreadFileChangesTimelineFromSessionPath,
 // @ts-ignore - tests import this TypeScript module directly via node:test.
 } from './threadFileChangesFallback.ts'
+import {
+  readAccountProfileSnapshot,
+  removeAccountProfile,
+  setActiveAccountProfile,
+  upsertAccountProfile,
+  type AccountManagedTokenPayload,
+  type AccountProfile,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './accountProfileStore.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { createAccountSwitchCoordinator, type AccountSwitchResult } from './accountSwitchCoordinator.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { createAccountTokenBroker } from './accountTokenBroker.ts'
 // @ts-ignore - tests import this TypeScript module directly via node:test.
 import { mergeThreadFileChangeTimelines } from '../utils/threadFileChanges.ts'
 import {
@@ -33,7 +46,8 @@ import {
   createTranscriptionService,
   TranscriptionServiceError,
   type VoiceInputFallbackConfig,
-} from './transcriptionService.js'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './transcriptionService.ts'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -105,9 +119,20 @@ const SHARED_SESSION_RPC_TRIGGER_METHODS = new Set([
 ])
 const PRIVATE_VOICE_INPUT_CAPABILITY_METHOD = 'web-local/voice-input/capability/read'
 const PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD = 'web-local/voice-input/transcription/create'
+const PRIVATE_ACCOUNT_PROFILES_LIST_METHOD = 'web-local/account/profiles/list'
+const PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD = 'web-local/account/profiles/switch'
+const PRIVATE_ACCOUNT_PROFILES_ADD_METHOD = 'web-local/account/profiles/add'
+const PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD = 'web-local/account/profiles/remove'
+const PRIVATE_ACCOUNT_ACTIVE_READ_METHOD = 'web-local/account/active/read'
+const ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH_METHOD = 'account/chatgptAuthTokens/refresh'
 const PRIVATE_RPC_METHODS = [
   PRIVATE_VOICE_INPUT_CAPABILITY_METHOD,
   PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_LIST_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_ADD_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD,
+  PRIVATE_ACCOUNT_ACTIVE_READ_METHOD,
 ]
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -118,6 +143,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function readOptionalText(value: unknown): string | null {
+  const normalized = readText(value)
+  return normalized.length > 0 ? normalized : null
 }
 
 function getErrorMessage(payload: unknown, fallback: string): string {
@@ -137,6 +167,20 @@ function getErrorMessage(payload: unknown, fallback: string): string {
   }
 
   return fallback
+}
+
+function areManagedTokenPayloadsEqual(
+  first: AccountManagedTokenPayload | null | undefined,
+  second: AccountManagedTokenPayload | null | undefined,
+): boolean {
+  if (!first && !second) return true
+  if (!first || !second) return false
+  return (
+    (first.idToken ?? null) === (second.idToken ?? null)
+    && first.accessToken === second.accessToken
+    && (first.refreshToken ?? null) === (second.refreshToken ?? null)
+    && first.accountId === second.accountId
+  )
 }
 
 type ThreadFileChangeActionErrorCode =
@@ -203,6 +247,17 @@ function getPersistedServerRequestsLedgerPath(): string {
     ? codexHome
     : join(homedir(), '.codex')
   return join(baseDir, 'codex-web-local', 'persisted-server-requests.json')
+}
+
+function getCodexHomePath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim()
+  return codexHome && codexHome.length > 0
+    ? resolve(codexHome)
+    : resolve(homedir(), '.codex')
+}
+
+function getCodexAuthJsonPath(): string {
+  return join(getCodexHomePath(), 'auth.json')
 }
 
 function parseTimestampMs(value: string | null): number | null {
@@ -1250,6 +1305,40 @@ class AppServerProcess {
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   }
+  private readonly accountTokenBroker = createAccountTokenBroker({
+    refresh: async (profile) => {
+      if (profile.tokenPayload) return profile.tokenPayload
+      throw new Error(`No token payload available for profile ${profile.profileId}`)
+    },
+  })
+  private readonly accountSwitchCoordinator = createAccountSwitchCoordinator({
+    readSnapshot: async () => {
+      const snapshot = await readAccountProfileSnapshot()
+      return {
+        activeProfileId: snapshot.activeProfileId,
+        profiles: snapshot.profiles.map((profile) => ({
+          profileId: profile.profileId,
+          accountId: profile.accountId,
+          tokenPayload: profile.tokenPayload,
+        })),
+      }
+    },
+    setActiveProfile: async (profileId) => setActiveAccountProfile(profileId),
+    getUsableAccessToken: async (profile) => this.accountTokenBroker.getUsableAccessToken(profile),
+    loginWithAuthTokens: async (payload) => {
+      await this.ensureInitialized()
+      await this.call('account/login/start', {
+        type: 'chatgptAuthTokens',
+        accessToken: payload.accessToken,
+        chatgptAccountId: payload.chatgptAccountId,
+        chatgptPlanType: payload.chatgptPlanType,
+      })
+    },
+    onSwitched: async (result) => {
+      await this.reconcileAccountProfileStatusesAfterSwitch(result)
+      await this.syncCodexAuthFileWithActiveProfile(result.activeProfileId).catch(() => {})
+    },
+  })
 
   setVoiceInputFallbackConfig(config: VoiceInputFallbackConfig): void {
     this.voiceInputFallbackConfig = config
@@ -1349,9 +1438,470 @@ class AppServerProcess {
     }
   }
 
+  private toPublicAccountProfile(profile: AccountProfile): {
+    profileId: string
+    accountId: string
+    provider: string
+    email: string | null
+    planType: string | null
+    status: string
+    lastUsedAtIso: string | null
+    tokenState: 'available' | 'missing'
+    chatgptAccountId: string | null
+    chatgptPlanType: string | null
+    tokenExpiresAtIso: string | null
+  } {
+    return {
+      profileId: profile.profileId,
+      accountId: profile.accountId,
+      provider: profile.provider,
+      email: profile.email,
+      planType: profile.planType,
+      status: profile.status,
+      lastUsedAtIso: profile.lastUsedAtIso,
+      tokenState: profile.tokenPayload ? 'available' : 'missing',
+      chatgptAccountId: profile.tokenPayload?.chatgptAccountId ?? null,
+      chatgptPlanType: profile.tokenPayload?.chatgptPlanType ?? null,
+      tokenExpiresAtIso: profile.tokenPayload?.expiresAtIso ?? null,
+    }
+  }
+
+  private async readCurrentAccountFallbackProfile(): Promise<ReturnType<AppServerProcess['toPublicAccountProfile']> | null> {
+    try {
+      await this.ensureInitialized()
+      const payload = await this.call('account/read', {})
+      const body = asRecord(payload)
+      const account = asRecord(body?.account)
+      if (!account) return null
+
+      const email = readOptionalText(account.email)
+      const accountId = email || readOptionalText(account.id)
+      if (!accountId) return null
+
+      return {
+        profileId: `current:${accountId}`,
+        accountId,
+        provider: 'chatgptAuthTokens',
+        email,
+        planType: readOptionalText(account.planType),
+        status: 'active',
+        lastUsedAtIso: null,
+        tokenState: 'missing',
+        chatgptAccountId: null,
+        chatgptPlanType: null,
+        tokenExpiresAtIso: null,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  private async readCurrentRuntimeAuthTokens(): Promise<{
+    accessToken: string
+    chatgptAccountId: string
+    managedTokenPayload: AccountManagedTokenPayload | null
+  } | null> {
+    try {
+      const raw = await readFile(getCodexAuthJsonPath(), 'utf8')
+      const body = asRecord(JSON.parse(raw))
+      const authMode = readText(body?.auth_mode)
+      const tokens = asRecord(body?.tokens)
+      const accessToken = readText(tokens?.access_token)
+      const chatgptAccountId = readText(tokens?.account_id)
+      if (!accessToken || !chatgptAccountId) return null
+      const idToken = readOptionalText(tokens?.id_token)
+      const refreshToken = readOptionalText(tokens?.refresh_token)
+      const hasManagedHints = authMode === 'chatgpt' || idToken !== null || refreshToken !== null
+      return {
+        accessToken,
+        chatgptAccountId,
+        managedTokenPayload: hasManagedHints
+          ? {
+              idToken,
+              accessToken,
+              refreshToken,
+              accountId: chatgptAccountId,
+            }
+          : null,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  private async syncCurrentRuntimeAccountProfile(): Promise<void> {
+    await this.ensureInitialized()
+    const payload = await this.call('account/read', {})
+    const body = asRecord(payload)
+    const account = asRecord(body?.account)
+    if (!account) return
+
+    const email = readOptionalText(account.email)
+    const accountId = email || readOptionalText(account.id)
+    if (!accountId) return
+
+    const authTokens = await this.readCurrentRuntimeAuthTokens()
+    if (!authTokens) return
+
+    const planType = readOptionalText(account.planType)
+    const snapshot = await readAccountProfileSnapshot()
+    const existingByIdentity = snapshot.profiles.find((profile) => (
+      profile.accountId === accountId
+      || (email !== null && profile.email === email)
+    ))
+    const profileId = existingByIdentity?.profileId ?? accountId
+    const existing = existingByIdentity
+      ?? snapshot.profiles.find((profile) => profile.profileId === profileId)
+    const existingTokenPayload = existing?.tokenPayload ?? null
+    const nextManagedTokenPayload = authTokens.managedTokenPayload
+      ?? (existing?.managedTokenPayload && existing.managedTokenPayload.accountId === authTokens.chatgptAccountId
+        ? existing.managedTokenPayload
+        : null)
+    const shouldTrustRuntimeAuthTokens =
+      !existingTokenPayload
+      || existingTokenPayload.chatgptAccountId === authTokens.chatgptAccountId
+    const nextTokenPayload = shouldTrustRuntimeAuthTokens
+      ? {
+        accessToken: authTokens.accessToken,
+        chatgptAccountId: authTokens.chatgptAccountId,
+        chatgptPlanType: planType,
+        expiresAtIso: null,
+      }
+      : {
+        accessToken: existingTokenPayload.accessToken,
+        chatgptAccountId: existingTokenPayload.chatgptAccountId,
+        chatgptPlanType: planType ?? existingTokenPayload.chatgptPlanType ?? null,
+        expiresAtIso: existingTokenPayload.expiresAtIso ?? null,
+      }
+    const shouldUpsert =
+      !existing
+      || existing.accountId !== accountId
+      || existing.email !== email
+      || existing.planType !== planType
+      || existing.status !== 'active'
+      || !existing.tokenPayload
+      || existing.tokenPayload.accessToken !== nextTokenPayload.accessToken
+      || existing.tokenPayload.chatgptAccountId !== nextTokenPayload.chatgptAccountId
+      || (existing.tokenPayload.chatgptPlanType ?? null) !== (nextTokenPayload.chatgptPlanType ?? null)
+      || !areManagedTokenPayloadsEqual(existing.managedTokenPayload, nextManagedTokenPayload)
+
+    if (shouldUpsert) {
+      await upsertAccountProfile({
+        profileId,
+        accountId,
+        provider: 'chatgptAuthTokens',
+        email,
+        planType,
+        tokenPayload: nextTokenPayload,
+        managedTokenPayload: nextManagedTokenPayload,
+        status: 'active',
+        lastUsedAtIso: new Date().toISOString(),
+      })
+    }
+    const duplicateProfiles = snapshot.profiles.filter((profile) => {
+      if (profile.profileId === profileId) return false
+      return (
+        profile.accountId === accountId
+        || (email !== null && profile.email === email)
+      )
+    })
+    if (duplicateProfiles.length > 0) {
+      await Promise.all(duplicateProfiles.map((profile) => removeAccountProfile(profile.profileId)))
+    }
+    if (snapshot.activeProfileId !== profileId) {
+      await setActiveAccountProfile(profileId)
+    }
+    await this.reconcileAccountProfileStatusesAfterSwitch({
+      activeProfileId: profileId,
+      previousProfileId: snapshot.activeProfileId,
+    }).catch(() => {})
+  }
+
+  private async reconcileAccountProfileStatusesAfterSwitch(
+    result: Pick<AccountSwitchResult, 'activeProfileId' | 'previousProfileId'>,
+  ): Promise<void> {
+    const snapshot = await readAccountProfileSnapshot()
+    const nowIso = new Date().toISOString()
+    const updates: Promise<void>[] = []
+    for (const profile of snapshot.profiles) {
+      let nextStatus = profile.status
+      let nextLastUsedAtIso = profile.lastUsedAtIso
+
+      if (profile.profileId === result.activeProfileId) {
+        nextStatus = 'active'
+        nextLastUsedAtIso = nowIso
+      } else if (profile.status === 'active') {
+        nextStatus = 'inactive'
+      }
+
+      if (nextStatus !== profile.status || nextLastUsedAtIso !== profile.lastUsedAtIso) {
+        updates.push(upsertAccountProfile({
+          ...profile,
+          status: nextStatus,
+          lastUsedAtIso: nextLastUsedAtIso,
+        }))
+      }
+    }
+
+    if (updates.length > 0) {
+      await Promise.all(updates)
+    }
+  }
+
+  private async syncCodexAuthFileWithActiveProfile(activeProfileId: string): Promise<void> {
+    const normalizedActiveProfileId = readText(activeProfileId)
+    if (!normalizedActiveProfileId) return
+
+    const snapshot = await readAccountProfileSnapshot()
+    const activeProfile = snapshot.profiles.find((profile) => profile.profileId === normalizedActiveProfileId)
+    const tokenPayload = activeProfile?.tokenPayload
+    if (!tokenPayload) return
+    const managedTokenPayload = activeProfile?.managedTokenPayload ?? null
+
+    const authPath = getCodexAuthJsonPath()
+    let authPayload: Record<string, unknown> = {}
+    try {
+      const raw = await readFile(authPath, 'utf8')
+      const parsed = asRecord(JSON.parse(raw))
+      if (parsed) {
+        authPayload = parsed
+      }
+    } catch {
+      authPayload = {}
+    }
+
+    if (managedTokenPayload && managedTokenPayload.accessToken && managedTokenPayload.accountId) {
+      const managedTokens: Record<string, unknown> = {
+        access_token: managedTokenPayload.accessToken,
+        account_id: managedTokenPayload.accountId,
+      }
+      if (managedTokenPayload.idToken) {
+        managedTokens.id_token = managedTokenPayload.idToken
+      }
+      if (managedTokenPayload.refreshToken) {
+        managedTokens.refresh_token = managedTokenPayload.refreshToken
+      }
+
+      const nextManagedAuthPayload: Record<string, unknown> = {
+        ...authPayload,
+        auth_mode: 'chatgpt',
+        tokens: managedTokens,
+        last_refresh: new Date().toISOString(),
+      }
+
+      await mkdir(dirname(authPath), { recursive: true })
+      await writeFile(authPath, JSON.stringify(nextManagedAuthPayload, null, 2), 'utf8')
+      return
+    }
+
+    const existingTokens = asRecord(authPayload.tokens)
+    const previousAccountId = readText(existingTokens?.account_id)
+    const shouldPreserveManagedTokens =
+      previousAccountId.length > 0
+      && previousAccountId === tokenPayload.chatgptAccountId
+
+    const nextTokens: Record<string, unknown> = {
+      access_token: tokenPayload.accessToken,
+      account_id: tokenPayload.chatgptAccountId,
+    }
+    if (shouldPreserveManagedTokens) {
+      const idToken = readText(existingTokens?.id_token)
+      const refreshToken = readText(existingTokens?.refresh_token)
+      if (idToken) {
+        nextTokens.id_token = idToken
+      }
+      if (refreshToken) {
+        nextTokens.refresh_token = refreshToken
+      }
+    }
+
+    const nextAuthPayload: Record<string, unknown> = {
+      ...authPayload,
+      auth_mode: 'chatgptAuthTokens',
+      tokens: nextTokens,
+      last_refresh: new Date().toISOString(),
+    }
+
+    await mkdir(dirname(authPath), { recursive: true })
+    await writeFile(authPath, JSON.stringify(nextAuthPayload, null, 2), 'utf8')
+  }
+
+  private async readAccountProfilesPrivateRpcPayload(): Promise<{
+    activeProfileId: string | null
+    profiles: ReturnType<AppServerProcess['toPublicAccountProfile']>[]
+  }> {
+    await this.syncCurrentRuntimeAccountProfile().catch(() => {})
+    const snapshot = await readAccountProfileSnapshot()
+    const profiles = snapshot.profiles.map((profile) => this.toPublicAccountProfile(profile))
+    if (profiles.length === 0) {
+      const fallbackProfile = await this.readCurrentAccountFallbackProfile()
+      if (fallbackProfile) {
+        return {
+          activeProfileId: fallbackProfile.profileId,
+          profiles: [fallbackProfile],
+        }
+      }
+    }
+    return {
+      activeProfileId: snapshot.activeProfileId,
+      profiles,
+    }
+  }
+
+  private async handleAccountPrivateRpc(method: string, params: unknown): Promise<unknown> {
+    if (method === PRIVATE_ACCOUNT_PROFILES_LIST_METHOD) {
+      return this.readAccountProfilesPrivateRpcPayload()
+    }
+
+    if (method === PRIVATE_ACCOUNT_ACTIVE_READ_METHOD) {
+      const snapshot = await readAccountProfileSnapshot()
+      const activeProfile = snapshot.activeProfileId
+        ? snapshot.profiles.find((profile) => profile.profileId === snapshot.activeProfileId) ?? null
+        : null
+      return {
+        activeProfileId: snapshot.activeProfileId,
+        activeProfile: activeProfile ? this.toPublicAccountProfile(activeProfile) : null,
+      }
+    }
+
+    if (method === PRIVATE_ACCOUNT_PROFILES_ADD_METHOD) {
+      const body = asRecord(params)
+      if (!body) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+      const profileId = readText(body.profileId) || readText(body.accountId)
+      const accountId = readText(body.accountId) || readText(body.chatgptAccountId)
+      const accessToken = readText(body.accessToken)
+      const chatgptAccountId = readText(body.chatgptAccountId) || accountId
+      const chatgptPlanType = readOptionalText(body.chatgptPlanType)
+      const managedIdToken = readOptionalText(body.idToken)
+      const managedRefreshToken = readOptionalText(body.refreshToken)
+      const managedAuthMode = readOptionalText(body.authMode)
+      if (!profileId || !accountId || !accessToken || !chatgptAccountId) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+
+      const status = readText(body.status)
+      await upsertAccountProfile({
+        profileId,
+        accountId,
+        provider: 'chatgptAuthTokens',
+        email: readOptionalText(body.email),
+        planType: readOptionalText(body.planType) ?? chatgptPlanType,
+        tokenPayload: {
+          accessToken,
+          chatgptAccountId,
+          chatgptPlanType,
+          expiresAtIso: readOptionalText(body.expiresAtIso),
+        },
+        managedTokenPayload: (managedAuthMode === 'chatgpt' || managedIdToken !== null || managedRefreshToken !== null)
+          ? {
+              idToken: managedIdToken,
+              accessToken,
+              refreshToken: managedRefreshToken,
+              accountId: chatgptAccountId,
+            }
+          : null,
+        status: status === 'active' || status === 'expired' || status === 'revoked'
+          ? status
+          : 'inactive',
+        lastUsedAtIso: new Date().toISOString(),
+      })
+      if (body.setActive === true) {
+        await setActiveAccountProfile(profileId)
+        await this.reconcileAccountProfileStatusesAfterSwitch({
+          activeProfileId: profileId,
+          previousProfileId: null,
+        }).catch(() => {})
+        await this.syncCodexAuthFileWithActiveProfile(profileId).catch(() => {})
+      }
+      return this.readAccountProfilesPrivateRpcPayload()
+    }
+
+    if (method === PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD) {
+      const body = asRecord(params)
+      const profileId = readText(body?.profileId)
+      if (!profileId) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+      let result: AccountSwitchResult
+      try {
+        result = await this.accountSwitchCoordinator.switchTo(profileId)
+      } catch (error) {
+        const message = getErrorMessage(error, 'Failed to switch account profile')
+        if (message.includes('requires experimentalApi capability')) {
+          throw new PrivateRpcError(
+            -32018,
+            '当前 Codex app-server 不支持免授权切换，请先点击“对齐账号”完成登录。',
+            409,
+          )
+        }
+        if (message.includes('No token payload available')) {
+          throw new PrivateRpcError(
+            -32019,
+            '目标账号缺少可用授权，请先“邮箱登录新增档案”或“对齐账号”。',
+            409,
+          )
+        }
+        throw error
+      }
+      const payload = await this.readAccountProfilesPrivateRpcPayload()
+      return {
+        ...payload,
+        switched: {
+          activeProfileId: result.activeProfileId,
+          previousProfileId: result.previousProfileId,
+        },
+      }
+    }
+
+    if (method === PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD) {
+      const body = asRecord(params)
+      const profileId = readText(body?.profileId)
+      if (!profileId) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+      const snapshot = await readAccountProfileSnapshot()
+      const targetProfile = snapshot.profiles.find((profile) => profile.profileId === profileId) ?? null
+      const activeProfile = snapshot.activeProfileId
+        ? snapshot.profiles.find((profile) => profile.profileId === snapshot.activeProfileId) ?? null
+        : null
+      const isCurrentActiveAccount = targetProfile !== null && activeProfile !== null && (
+        targetProfile.profileId === activeProfile.profileId
+        || targetProfile.accountId === activeProfile.accountId
+        || (
+          targetProfile.email !== null
+          && activeProfile.email !== null
+          && targetProfile.email === activeProfile.email
+        )
+        || (
+          targetProfile.tokenPayload?.chatgptAccountId !== undefined
+          && activeProfile.tokenPayload?.chatgptAccountId !== undefined
+          && targetProfile.tokenPayload.chatgptAccountId === activeProfile.tokenPayload.chatgptAccountId
+        )
+      )
+      if (snapshot.activeProfileId === profileId || isCurrentActiveAccount) {
+        throw new PrivateRpcError(-32602, 'Active account profile cannot be removed', 400)
+      }
+      await removeAccountProfile(profileId)
+      return this.readAccountProfilesPrivateRpcPayload()
+    }
+
+    throw new PrivateRpcError(-32602, 'Invalid private RPC method', 400)
+  }
+
   private async handlePrivateRpc(method: string, params: unknown): Promise<unknown> {
     if (method === PRIVATE_VOICE_INPUT_CAPABILITY_METHOD || method === PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD) {
       return this.handleVoiceInputPrivateRpc(method, params)
+    }
+    if (
+      method === PRIVATE_ACCOUNT_PROFILES_LIST_METHOD
+      || method === PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD
+      || method === PRIVATE_ACCOUNT_PROFILES_ADD_METHOD
+      || method === PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD
+      || method === PRIVATE_ACCOUNT_ACTIVE_READ_METHOD
+    ) {
+      return this.handleAccountPrivateRpc(method, params)
     }
 
     return PRIVATE_RPC_NOT_HANDLED
@@ -1963,7 +2513,42 @@ class AppServerProcess {
     })
   }
 
-  private handleServerRequest(requestId: number, method: string, params: unknown): void {
+  private async resolveChatgptAuthTokensRefreshPayload(params: unknown): Promise<{
+    accessToken: string
+    chatgptAccountId: string
+    chatgptPlanType: string | null
+  } | null> {
+    const requestParams = asRecord(params)
+    const previousAccountId = readText(requestParams?.previousAccountId)
+    if (!previousAccountId) return null
+
+    const snapshot = await readAccountProfileSnapshot()
+    const matchedProfile = snapshot.profiles.find((profile) => profile.accountId === previousAccountId)
+    if (!matchedProfile?.tokenPayload) return null
+
+    const refreshedPayload = await this.accountTokenBroker.getUsableAccessToken({
+      profileId: matchedProfile.profileId,
+      tokenPayload: matchedProfile.tokenPayload,
+    })
+    if (
+      refreshedPayload.accessToken !== matchedProfile.tokenPayload.accessToken
+      || refreshedPayload.chatgptPlanType !== matchedProfile.tokenPayload.chatgptPlanType
+      || refreshedPayload.expiresAtIso !== matchedProfile.tokenPayload.expiresAtIso
+    ) {
+      await upsertAccountProfile({
+        ...matchedProfile,
+        tokenPayload: refreshedPayload,
+      })
+    }
+
+    return {
+      accessToken: refreshedPayload.accessToken,
+      chatgptAccountId: refreshedPayload.chatgptAccountId,
+      chatgptPlanType: refreshedPayload.chatgptPlanType ?? null,
+    }
+  }
+
+  private enqueuePendingServerRequest(requestId: number, method: string, params: unknown): void {
     const threadId = readPendingServerRequestThreadId(params)
     const pendingRequest: PendingServerRequest = {
       id: requestId,
@@ -1983,6 +2568,36 @@ class AppServerProcess {
       method: 'server/request',
       params: pendingRequest,
     })
+  }
+
+  private handleServerRequest(requestId: number, method: string, params: unknown): void {
+    if (method === ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH_METHOD) {
+      void (async () => {
+        try {
+          const refreshResponse = await this.resolveChatgptAuthTokensRefreshPayload(params)
+          if (refreshResponse) {
+            this.sendServerRequestReply(requestId, { result: refreshResponse })
+            this.emitNotification({
+              method: 'server/request/resolved',
+              params: {
+                id: requestId,
+                method,
+                threadId: readPendingServerRequestThreadId(params),
+                mode: 'auto',
+                resolvedAtIso: new Date().toISOString(),
+              },
+            })
+            return
+          }
+        } catch {
+          // Fallback to manual flow when auto refresh resolution fails.
+        }
+        this.enqueuePendingServerRequest(requestId, method, params)
+      })()
+      return
+    }
+
+    this.enqueuePendingServerRequest(requestId, method, params)
   }
 
   private async call(method: string, params: unknown): Promise<unknown> {
@@ -2009,6 +2624,9 @@ class AppServerProcess {
         name: 'codex-web-local',
         version: '0.1.0',
       },
+      capabilities: {
+        experimentalApi: true,
+      },
     })
 
     this.initialized = true
@@ -2018,6 +2636,14 @@ class AppServerProcess {
     const privateResult = await this.handlePrivateRpc(method, params)
     if (privateResult !== PRIVATE_RPC_NOT_HANDLED) {
       return privateResult
+    }
+
+    if (method === 'account/login/start') {
+      const body = asRecord(params)
+      const loginType = readText(body?.type)
+      if (loginType === 'chatgpt') {
+        await this.syncCurrentRuntimeAccountProfile().catch(() => {})
+      }
     }
 
     await this.ensureInitialized()

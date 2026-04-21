@@ -62,6 +62,12 @@ function clamp(value: number, minValue: number, maxValue: number): number {
   return Math.min(Math.max(value, minValue), maxValue)
 }
 
+function resolveProfileScopedStorageKey(storageKey: string, profileId: string): string {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId) return storageKey
+  return `${storageKey}.${encodeURIComponent(normalizedProfileId)}`
+}
+
 function normalizeThreadScrollState(value: unknown): ThreadScrollState | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
 
@@ -363,11 +369,12 @@ export function saveAutoRefreshEnabled(value: boolean): void {
   window.localStorage.setItem(AUTO_REFRESH_ENABLED_STORAGE_KEY, value ? '1' : '0')
 }
 
-export function loadThreadScrollStateMap(): Record<string, ThreadScrollState> {
+export function loadThreadScrollStateMap(profileId = ''): Record<string, ThreadScrollState> {
   if (typeof window === 'undefined') return {}
+  const storageKey = resolveProfileScopedStorageKey(SCROLL_STATE_STORAGE_KEY, profileId)
 
   try {
-    const raw = window.localStorage.getItem(SCROLL_STATE_STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return {}
 
     const parsed = JSON.parse(raw) as unknown
@@ -387,24 +394,27 @@ export function loadThreadScrollStateMap(): Record<string, ThreadScrollState> {
   }
 }
 
-export function saveThreadScrollStateMap(state: Record<string, ThreadScrollState>): void {
+export function saveThreadScrollStateMap(state: Record<string, ThreadScrollState>, profileId = ''): void {
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(SCROLL_STATE_STORAGE_KEY, JSON.stringify(state))
+  const storageKey = resolveProfileScopedStorageKey(SCROLL_STATE_STORAGE_KEY, profileId)
+  window.localStorage.setItem(storageKey, JSON.stringify(state))
 }
 
-export function loadSelectedThreadId(): string {
+export function loadSelectedThreadId(profileId = ''): string {
   if (typeof window === 'undefined') return ''
-  const raw = window.localStorage.getItem(SELECTED_THREAD_STORAGE_KEY)
+  const storageKey = resolveProfileScopedStorageKey(SELECTED_THREAD_STORAGE_KEY, profileId)
+  const raw = window.localStorage.getItem(storageKey)
   return raw ?? ''
 }
 
-export function saveSelectedThreadId(threadId: string): void {
+export function saveSelectedThreadId(threadId: string, profileId = ''): void {
   if (typeof window === 'undefined') return
+  const storageKey = resolveProfileScopedStorageKey(SELECTED_THREAD_STORAGE_KEY, profileId)
   if (!threadId) {
-    window.localStorage.removeItem(SELECTED_THREAD_STORAGE_KEY)
+    window.localStorage.removeItem(storageKey)
     return
   }
-  window.localStorage.setItem(SELECTED_THREAD_STORAGE_KEY, threadId)
+  window.localStorage.setItem(storageKey, threadId)
 }
 
 export function loadProjectOrder(): string[] {
@@ -460,10 +470,11 @@ export function saveProjectDisplayNames(displayNames: Record<string, string>): v
   window.localStorage.setItem(PROJECT_DISPLAY_NAME_STORAGE_KEY, JSON.stringify(displayNames))
 }
 
-export function loadThreadContextUsageMap(): Record<string, UiThreadContextUsage> {
+export function loadThreadContextUsageMap(profileId = ''): Record<string, UiThreadContextUsage> {
   if (typeof window === 'undefined') return {}
+  const storageKey = resolveProfileScopedStorageKey(CONTEXT_USAGE_STORAGE_KEY, profileId)
   try {
-    const raw = window.localStorage.getItem(CONTEXT_USAGE_STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
@@ -479,9 +490,10 @@ export function loadThreadContextUsageMap(): Record<string, UiThreadContextUsage
   }
 }
 
-export function saveThreadContextUsageMap(state: Record<string, UiThreadContextUsage>): void {
+export function saveThreadContextUsageMap(state: Record<string, UiThreadContextUsage>, profileId = ''): void {
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(CONTEXT_USAGE_STORAGE_KEY, JSON.stringify(state))
+  const storageKey = resolveProfileScopedStorageKey(CONTEXT_USAGE_STORAGE_KEY, profileId)
+  window.localStorage.setItem(storageKey, JSON.stringify(state))
 }
 
 export function loadLatestFileChangesMap(): Record<string, UiTurnFileChanges> {

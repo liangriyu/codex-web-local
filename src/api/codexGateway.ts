@@ -34,6 +34,7 @@ import {
 } from './normalizers/v2'
 import type {
   ChatMode,
+  UiAccountProfile,
   UiMessage,
   UiPersistedServerRequest,
   UiProjectGroup,
@@ -73,6 +74,10 @@ const EMPTY_MODEL_REASONING_SUPPORT: ModelReasoningSupport = {
 }
 
 const modelReasoningSupportById = new Map<string, ModelReasoningSupport>()
+const PRIVATE_ACCOUNT_PROFILES_LIST_METHOD = 'web-local/account/profiles/list'
+const PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD = 'web-local/account/profiles/switch'
+const PRIVATE_ACCOUNT_PROFILES_ADD_METHOD = 'web-local/account/profiles/add'
+const PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD = 'web-local/account/profiles/remove'
 
 export type FilePreviewPayload = {
   path: string
@@ -96,6 +101,19 @@ export type AccountRateLimitSnapshot = {
     balance: string | null
   } | null
   planType: string | null
+}
+
+export type AddAccountProfileInput = {
+  profileId?: string
+  accountId?: string
+  email?: string | null
+  planType?: string | null
+  accessToken: string
+  chatgptAccountId?: string
+  chatgptPlanType?: string | null
+  expiresAtIso?: string | null
+  status?: 'active' | 'inactive' | 'expired' | 'revoked'
+  setActive?: boolean
 }
 
 type RpcCallOptions = {
@@ -1130,6 +1148,88 @@ function toRateLimitSnapshot(payload: GetAccountRateLimitsResponse): AccountRate
 export async function getAccountRateLimitSnapshot(): Promise<AccountRateLimitSnapshot | null> {
   const payload = await callRpc<GetAccountRateLimitsResponse>('account/rateLimits/read')
   return toRateLimitSnapshot(payload)
+}
+
+function normalizeAccountProfile(value: unknown): UiAccountProfile | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const profileId = typeof row.profileId === 'string' ? row.profileId.trim() : ''
+  const accountId = typeof row.accountId === 'string' ? row.accountId.trim() : ''
+  if (!profileId || !accountId) return null
+
+  return {
+    profileId,
+    accountId,
+    provider: typeof row.provider === 'string' ? row.provider : 'chatgptAuthTokens',
+    email: typeof row.email === 'string' ? row.email : null,
+    planType: typeof row.planType === 'string' ? row.planType : null,
+    status: typeof row.status === 'string' ? row.status : 'inactive',
+    lastUsedAtIso: typeof row.lastUsedAtIso === 'string' ? row.lastUsedAtIso : null,
+    tokenState: row.tokenState === 'available' ? 'available' : 'missing',
+    chatgptAccountId: typeof row.chatgptAccountId === 'string' ? row.chatgptAccountId : null,
+    chatgptPlanType: typeof row.chatgptPlanType === 'string' ? row.chatgptPlanType : null,
+    tokenExpiresAtIso: typeof row.tokenExpiresAtIso === 'string' ? row.tokenExpiresAtIso : null,
+  }
+}
+
+function normalizeAccountProfilesPayload(payload: unknown): { activeProfileId: string | null; profiles: UiAccountProfile[] } {
+  const row = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {}
+  const activeProfileId = typeof row.activeProfileId === 'string' && row.activeProfileId.trim().length > 0
+    ? row.activeProfileId.trim()
+    : null
+  const profiles = Array.isArray(row.profiles)
+    ? row.profiles
+      .map((entry) => normalizeAccountProfile(entry))
+      .filter((entry): entry is UiAccountProfile => entry !== null)
+    : []
+  return {
+    activeProfileId,
+    profiles,
+  }
+}
+
+export async function listAccountProfiles(): Promise<{ activeProfileId: string | null; profiles: UiAccountProfile[] }> {
+  const payload = await callRpc<unknown>(PRIVATE_ACCOUNT_PROFILES_LIST_METHOD, {})
+  return normalizeAccountProfilesPayload(payload)
+}
+
+export async function switchAccountProfile(profileId: string): Promise<{ activeProfileId: string | null; profiles: UiAccountProfile[] }> {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId) {
+    throw new Error('Account profile id is required')
+  }
+  const payload = await callRpc<unknown>(PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD, { profileId: normalizedProfileId })
+  return normalizeAccountProfilesPayload(payload)
+}
+
+export async function addAccountProfile(profile: AddAccountProfileInput): Promise<{ activeProfileId: string | null; profiles: UiAccountProfile[] }> {
+  const payload = await callRpc<unknown>(PRIVATE_ACCOUNT_PROFILES_ADD_METHOD, profile)
+  return normalizeAccountProfilesPayload(payload)
+}
+
+export async function removeAccountProfile(profileId: string): Promise<{ activeProfileId: string | null; profiles: UiAccountProfile[] }> {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId) {
+    throw new Error('Account profile id is required')
+  }
+  const payload = await callRpc<unknown>(PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD, { profileId: normalizedProfileId })
+  return normalizeAccountProfilesPayload(payload)
+}
+
+export async function startChatgptAccountLogin(): Promise<string> {
+  const payload = await callRpc<unknown>('account/login/start', {
+    type: 'chatgpt',
+  })
+  const row = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null
+  const authUrl = row && typeof row.authUrl === 'string' ? row.authUrl.trim() : ''
+  if (!authUrl) {
+    throw new Error('account/login/start did not return authUrl')
+  }
+  return authUrl
 }
 
 export async function compactThreadContext(threadId: string): Promise<void> {

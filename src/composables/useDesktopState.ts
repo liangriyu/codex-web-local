@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import {
   archiveThread,
+  addAccountProfile as addAccountProfileRequest,
   compactThreadContext,
   createAndSwitchWorkspaceBranch,
   dismissPersistedServerRequests as dismissPersistedServerRequestsRequest,
@@ -12,6 +13,7 @@ import {
   fetchWorkspacePushStatus,
   getAvailableModelIds,
   getAccountRateLimitSnapshot,
+  listAccountProfiles as listAccountProfilesRequest,
   getCurrentModelConfig,
   getModelReasoningSupport,
   getPersistedServerRequests,
@@ -24,18 +26,23 @@ import {
   getThreadGroups,
   renameThread,
   reapplyLatestThreadFileChange as reapplyLatestThreadFileChangeRequest,
+  removeAccountProfile as removeAccountProfileRequest,
   resumeThread,
   switchWorkspaceBranch,
+  switchAccountProfile as switchAccountProfileRequest,
+  startChatgptAccountLogin as startChatgptAccountLoginRequest,
   startThread,
   subscribeCodexNotifications,
   startThreadTurn,
   undoLatestThreadFileChange as undoLatestThreadFileChangeRequest,
   type RpcNotification,
+  type AddAccountProfileInput,
 } from '../api/codexGateway'
 import { CodexApiError } from '../api/codexErrors'
 import type {
   ComposerSubmitPayload,
   UiRateLimitUsage,
+  UiAccountProfile,
   UiThreadContextUsage,
   ReasoningEffort,
   ChatMode,
@@ -248,7 +255,9 @@ function isResumeNoRolloutError(error: unknown): error is CodexApiError {
 export function useDesktopState() {
   const projectGroups = ref<UiProjectGroup[]>([])
   const sourceGroups = ref<UiProjectGroup[]>([])
-  const selectedThreadId = ref(loadSelectedThreadId())
+  const accountProfiles = ref<UiAccountProfile[]>([])
+  const activeAccountProfileId = ref('')
+  const selectedThreadId = ref(loadSelectedThreadId(activeAccountProfileId.value))
   const persistedMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveReasoningTextByThreadId = ref<Record<string, string>>({})
@@ -259,7 +268,7 @@ export function useDesktopState() {
   const selectedReasoningEffort = ref<ReasoningEffort | ''>('medium')
   const selectedChatMode = ref<ChatMode>('act')
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
-  const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
+  const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap(activeAccountProfileId.value))
   const projectOrder = ref<string[]>(loadProjectOrder())
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
   const loadedVersionByThreadId = ref<Record<string, string>>({})
@@ -279,7 +288,7 @@ export function useDesktopState() {
       .filter((entry) => entry[1].length > 0),
   ))
   const queuedMessagesByThreadId = ref<Record<string, QueuedMessageState[]>>({})
-  const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>(loadThreadContextUsageMap())
+  const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>(loadThreadContextUsageMap(activeAccountProfileId.value))
   const rateLimitUsage = ref<UiRateLimitUsage | null>(loadRateLimitUsage())
   const compactingContextByThreadId = ref<Record<string, boolean>>({})
   const workspaceBranchStateByCwd = ref<Record<string, UiWorkspaceBranchState>>({})
@@ -475,7 +484,7 @@ export function useDesktopState() {
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
     selectedThreadId.value = nextThreadId
-    saveSelectedThreadId(nextThreadId)
+    saveSelectedThreadId(nextThreadId, activeAccountProfileId.value)
     activeReasoningItemId = ''
     shouldAutoScrollOnNextAgentEvent = false
   }
@@ -1380,6 +1389,98 @@ export function useDesktopState() {
     }
   }
 
+  function restoreAccountScopedUiState(): void {
+    selectedThreadId.value = loadSelectedThreadId(activeAccountProfileId.value)
+    scrollStateByThreadId.value = loadThreadScrollStateMap(activeAccountProfileId.value)
+    contextUsageByThreadId.value = loadThreadContextUsageMap(activeAccountProfileId.value)
+    activeReasoningItemId = ''
+    shouldAutoScrollOnNextAgentEvent = false
+  }
+
+  async function loadAccountProfiles(): Promise<void> {
+    try {
+      const payload = await listAccountProfilesRequest()
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+    } catch {
+      // Keep current account profile state on transient failures.
+    }
+  }
+
+  async function switchAccountProfile(profileId: string): Promise<boolean> {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId) return false
+
+    try {
+      const payload = await switchAccountProfileRequest(normalizedProfileId)
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+      await refreshRateLimitUsage({ force: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to switch account profile'
+      return false
+    }
+  }
+
+  async function addAccountProfile(profile: AddAccountProfileInput): Promise<boolean> {
+    try {
+      const payload = await addAccountProfileRequest(profile)
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+      await refreshRateLimitUsage({ force: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to add account profile'
+      return false
+    }
+  }
+
+  async function removeAccountProfile(profileId: string): Promise<boolean> {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId) return false
+
+    try {
+      const payload = await removeAccountProfileRequest(normalizedProfileId)
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+      await refreshRateLimitUsage({ force: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to remove account profile'
+      return false
+    }
+  }
+
+  async function startAccountAlignment(): Promise<string | null> {
+    try {
+      return await startChatgptAccountLoginRequest()
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to start account alignment'
+      return null
+    }
+  }
+
   function applyThreadFlags(): void {
     const flaggedGroups = buildFlaggedThreadGroups(
       sourceGroups.value,
@@ -1401,7 +1502,7 @@ export function useDesktopState() {
     const nextScrollState = pruneThreadStateMap(scrollStateByThreadId.value, activeThreadIds)
     if (nextScrollState !== scrollStateByThreadId.value) {
       scrollStateByThreadId.value = nextScrollState
-      saveThreadScrollStateMap(nextScrollState)
+      saveThreadScrollStateMap(nextScrollState, activeAccountProfileId.value)
     }
     loadedMessagesByThreadId.value = pruneThreadStateMap(loadedMessagesByThreadId.value, activeThreadIds)
     loadedVersionByThreadId.value = pruneThreadStateMap(loadedVersionByThreadId.value, activeThreadIds)
@@ -1417,7 +1518,7 @@ export function useDesktopState() {
     saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
     queuedMessagesByThreadId.value = pruneThreadStateMap(queuedMessagesByThreadId.value, activeThreadIds)
     contextUsageByThreadId.value = pruneThreadStateMap(contextUsageByThreadId.value, activeThreadIds)
-    saveThreadContextUsageMap(contextUsageByThreadId.value)
+    saveThreadContextUsageMap(contextUsageByThreadId.value, activeAccountProfileId.value)
     compactingContextByThreadId.value = pruneThreadStateMap(compactingContextByThreadId.value, activeThreadIds)
     eventUnreadByThreadId.value = pruneThreadStateMap(eventUnreadByThreadId.value, activeThreadIds)
     inProgressById.value = pruneThreadStateMap(inProgressById.value, activeThreadIds)
@@ -1565,7 +1666,7 @@ export function useDesktopState() {
       ...scrollStateByThreadId.value,
       [threadId]: normalizedState,
     }
-    saveThreadScrollStateMap(scrollStateByThreadId.value)
+    saveThreadScrollStateMap(scrollStateByThreadId.value, activeAccountProfileId.value)
   }
 
   function setPersistedMessagesForThread(threadId: string, nextMessages: UiMessage[]): void {
@@ -1870,7 +1971,7 @@ export function useDesktopState() {
         ...contextUsageByThreadId.value,
         [threadContextUsage.threadId]: threadContextUsage.usage,
       }
-      saveThreadContextUsageMap(contextUsageByThreadId.value)
+      saveThreadContextUsageMap(contextUsageByThreadId.value, activeAccountProfileId.value)
     }
 
     if (notification.method === 'account/rateLimits/updated') {
@@ -2221,6 +2322,7 @@ export function useDesktopState() {
         loadThreads(),
         refreshModelPreferences(),
         refreshRateLimitUsage({ force: true }),
+        loadAccountProfiles(),
         refreshSharedSessionSnapshots({ silent: true }),
       ])
       await loadMessages(selectedThreadId.value)
@@ -2623,6 +2725,7 @@ export function useDesktopState() {
     if (isAutoRefreshEnabled.value) {
       startAutoRefreshTimer()
     }
+    void loadAccountProfiles()
     void refreshRateLimitUsage()
     void refreshSharedSessionSnapshots({ silent: true })
     void loadPendingServerRequestsFromBridge()
@@ -2794,6 +2897,8 @@ export function useDesktopState() {
     selectedWorkspaceBranchState,
     selectedThreadContextUsage,
     selectedThreadRateLimitUsage,
+    accountProfiles,
+    activeAccountProfileId,
     isCompactingSelectedThreadContext,
     selectedLiveOverlay,
     selectedThreadId,
@@ -2840,6 +2945,11 @@ export function useDesktopState() {
     setSelectedModelId,
     setSelectedReasoningEffort,
     setSelectedChatMode,
+    loadAccountProfiles,
+    switchAccountProfile,
+    addAccountProfile,
+    removeAccountProfile,
+    startAccountAlignment,
     respondToPendingServerRequest,
     dismissPersistedServerRequests,
     refreshSharedSessionSnapshots,

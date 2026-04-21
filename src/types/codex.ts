@@ -102,6 +102,20 @@ export type UiRateLimitUsage = {
   planType: string | null
 }
 
+export type UiAccountProfile = {
+  profileId: string
+  accountId: string
+  provider: string
+  email: string | null
+  planType: string | null
+  status: string
+  lastUsedAtIso: string | null
+  tokenState: 'available' | 'missing'
+  chatgptAccountId: string | null
+  chatgptPlanType: string | null
+  tokenExpiresAtIso: string | null
+}
+
 export type UiMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'

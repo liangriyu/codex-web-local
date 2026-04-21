@@ -47,6 +47,93 @@
 - `provider: "openai" | "zhipu"`
 - `model: string`
 
+### `web-local/account/profiles/list`
+
+用途：
+
+- 读取账号档案池（脱敏视图）
+- 返回当前活跃账号档案 ID
+
+返回字段：
+
+- `activeProfileId: string | null`
+- `profiles: Array<{ profileId, accountId, provider, email, planType, status, lastUsedAtIso, tokenState, chatgptAccountId, chatgptPlanType, tokenExpiresAtIso }>`
+
+说明：
+
+- 返回结果不包含 `accessToken` 明文
+
+### `web-local/account/active/read`
+
+用途：
+
+- 读取当前活跃账号档案
+
+返回字段：
+
+- `activeProfileId: string | null`
+- `activeProfile: object | null`（字段结构同 `profiles/list` 中单条记录）
+
+### `web-local/account/profiles/add`
+
+用途：
+
+- 新增或覆盖一个账号档案（按 `profileId`）
+
+请求字段：
+
+- `profileId?: string`（缺省时回退到 `accountId`）
+- `accountId?: string`
+- `email?: string | null`
+- `planType?: string | null`
+- `accessToken: string`
+- `chatgptAccountId?: string`（缺省时回退到 `accountId`）
+- `chatgptPlanType?: string | null`
+- `expiresAtIso?: string | null`
+- `status?: "active" | "inactive" | "expired" | "revoked"`
+- `setActive?: boolean`
+
+返回字段：
+
+- 与 `web-local/account/profiles/list` 相同
+
+### `web-local/account/profiles/switch`
+
+用途：
+
+- 将目标档案切换为当前活跃账号（通过 `account/login/start` + `chatgptAuthTokens`）
+
+请求字段：
+
+- `profileId: string`
+
+返回字段：
+
+- `activeProfileId: string | null`
+- `profiles: [...]`
+- `switched: { activeProfileId: string, previousProfileId: string | null }`
+
+### `web-local/account/profiles/remove`
+
+用途：
+
+- 删除账号档案；若删除的是当前活跃档案，则同时清空活跃档案指针
+
+请求字段：
+
+- `profileId: string`
+
+返回字段：
+
+- 与 `web-local/account/profiles/list` 相同
+
+## 非私有 RPC 但已接入的账号自动应答
+
+- bridge 已在 server-request 流程中接入 `account/chatgptAuthTokens/refresh` 自动应答：
+  - 会按 `previousAccountId` 在档案池中匹配账号
+  - 命中后自动回填 `{ accessToken, chatgptAccountId, chatgptPlanType }`
+  - 未命中或出错时回退到原有 pending request 人工处理路径
+
 ## 错误码
 
 当前私有 RPC 约定以下错误码：

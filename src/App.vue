@@ -58,6 +58,16 @@
           @archive="onArchiveThread" @start-new-thread="onStartNewThread" @rename-thread="onRenameThread" @rename-project="onRenameProject"
           @remove-project="onRemoveProject" @reorder-project="onReorderProject" />
 
+        <SidebarAccountSwitcher
+          v-if="!isSidebarCollapsed"
+          class="sidebar-account-switcher-host"
+          :account-profiles="accountProfiles"
+          :active-account-profile-id="activeAccountProfileId"
+          @switch="onSwitchAccountProfile"
+          @align="onAlignAccount"
+          @remove="onRemoveAccountProfile"
+        />
+
         <div v-if="!isSidebarCollapsed" class="sidebar-footer-actions">
           <button
             class="sidebar-footer-button"
@@ -285,6 +295,7 @@ import ComposerDropdown from './components/content/ComposerDropdown.vue'
 import CodePreviewPanel from './components/content/CodePreviewPanel.vue'
 import type { PreviewPanelState } from './components/content/CodePreviewPanel.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
+import SidebarAccountSwitcher from './components/sidebar/SidebarAccountSwitcher.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
 import IconThemeMode from './components/icons/IconThemeMode.vue'
@@ -303,6 +314,8 @@ import {
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const UI_THEME_STORAGE_KEY = 'codex-web-local.ui-theme.v1'
 const UI_LANGUAGE_STORAGE_KEY = 'codex-web-local.ui-language.v1'
+const ACCOUNT_ALIGNMENT_REFRESH_INTERVAL_MS = 2000
+const ACCOUNT_ALIGNMENT_REFRESH_DURATION_MS = 30000
 type ThemeMode = 'light' | 'dark' | 'auto'
 
 const {
@@ -323,6 +336,8 @@ const {
   selectedQueuedMessages,
   selectedThreadContextUsage,
   selectedThreadRateLimitUsage,
+  accountProfiles,
+  activeAccountProfileId,
   isCompactingSelectedThreadContext,
   selectedLiveOverlay,
   sharedSessionSnapshotByThreadId,
@@ -367,6 +382,9 @@ const {
   setSelectedModelId,
   setSelectedReasoningEffort,
   setSelectedChatMode,
+  switchAccountProfile,
+  removeAccountProfile,
+  startAccountAlignment,
   respondToPendingServerRequest,
   dismissPersistedServerRequests,
   renameProject,
@@ -393,6 +411,8 @@ const isSidebarSearchVisible = ref(false)
 const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
 const previewPanel = ref<PreviewPanelState | null>(null)
 const isCreatingThreadFromHome = ref(false)
+let accountAlignmentRefreshTimer: number | null = null
+let accountAlignmentRefreshStartedAtMs = 0
 const workspaceDiffTotals = computed(() => selectedWorkspaceDiffTotals.value)
 const headerDiffTotals = computed(() => {
   if (previewPanel.value?.kind === 'diff') {
@@ -551,6 +571,7 @@ const newThreadFolderOptions = computed(() => {
 
 onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown)
+  window.addEventListener('focus', onWindowFocus)
   applyThemeMode(uiTheme.value)
   setupSystemThemeSync()
   void initialize()
@@ -558,7 +579,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeyDown)
+  window.removeEventListener('focus', onWindowFocus)
   cleanupSystemThemeSync()
+  clearAccountAlignmentRefreshTimer()
   stopPolling()
 })
 
@@ -701,6 +724,51 @@ function onSelectModel(modelId: string): void {
 
 function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {
   setSelectedReasoningEffort(effort)
+}
+
+function onSwitchAccountProfile(profileId: string): void {
+  void switchAccountProfile(profileId)
+}
+
+function onRemoveAccountProfile(profileId: string): void {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId) return
+  void removeAccountProfile(normalizedProfileId)
+}
+
+function clearAccountAlignmentRefreshTimer(): void {
+  if (accountAlignmentRefreshTimer !== null) {
+    window.clearInterval(accountAlignmentRefreshTimer)
+    accountAlignmentRefreshTimer = null
+  }
+  accountAlignmentRefreshStartedAtMs = 0
+}
+
+function scheduleAccountAlignmentRefresh(): void {
+  clearAccountAlignmentRefreshTimer()
+  accountAlignmentRefreshStartedAtMs = Date.now()
+  void refreshAll()
+  accountAlignmentRefreshTimer = window.setInterval(() => {
+    if (Date.now() - accountAlignmentRefreshStartedAtMs >= ACCOUNT_ALIGNMENT_REFRESH_DURATION_MS) {
+      clearAccountAlignmentRefreshTimer()
+      return
+    }
+    void refreshAll()
+  }, ACCOUNT_ALIGNMENT_REFRESH_INTERVAL_MS)
+}
+
+function onWindowFocus(): void {
+  if (accountAlignmentRefreshTimer === null) return
+  void refreshAll()
+}
+
+function onAlignAccount(): void {
+  void (async () => {
+    const authUrl = await startAccountAlignment()
+    if (!authUrl) return
+    scheduleAccountAlignmentRefresh()
+    window.open(authUrl, '_blank', 'noopener,noreferrer')
+  })()
 }
 
 function onInterruptTurn(): void {

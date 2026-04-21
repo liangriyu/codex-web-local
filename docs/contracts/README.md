@@ -6,6 +6,7 @@
 ## 契约资产
 - 说明文档（中文）：[APP_SERVER_DOCUMENTATION.zh-CN.md](./APP_SERVER_DOCUMENTATION.zh-CN.md)
 - Web Local 私有 RPC：[WEB_LOCAL_PRIVATE_RPC.zh-CN.md](./WEB_LOCAL_PRIVATE_RPC.zh-CN.md)
+  - 当前覆盖语音 fallback 与账号档案池扩展能力
 - schema 产物目录：`documentation/app-server-schemas/`
   - JSON: `documentation/app-server-schemas/json/`
   - TypeScript: `documentation/app-server-schemas/typescript/`

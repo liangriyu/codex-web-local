@@ -91,6 +91,11 @@ When started with password protection (default), the server prints the password 
   - current git branch
   - context window usage ring with detailed hover info
   - remaining quota hover card
+- Multi-account profile pool:
+  - web/mobile can save and list multiple account profiles
+  - switching to an already pooled profile does not require an OAuth callback
+  - after switching, the target profile becomes the active Codex account; the previous one returns to the pool
+  - thread selection, scroll state, and context usage are restored per active profile
 - Composer now supports voice input:
   - browsers with native speech recognition can fill transcripts back into the composer
   - browsers without native recognition can use a server-side voice fallback only when the server explicitly enables it
@@ -98,6 +103,11 @@ When started with password protection (default), the server prints the password 
 - Context hover card supports manual compaction via "Compact Now" (calls `thread/compact/start`).
 - Thread list uses `name` as the primary title. `preview` is shown in tooltip, not inline on hover.
 - You can continue typing while the model is still responding. New sends are queued and auto-sent after the current turn finishes.
+
+## Multi-account Notes
+
+- First-time profile enrollment still needs an authorized token source (`chatgptAuthTokens`) from a previously authorized flow.
+- This project does not change upstream app-server protocols; account pooling is implemented as host-side private RPC extensions.
 
 ## Voice Input Notes
 
