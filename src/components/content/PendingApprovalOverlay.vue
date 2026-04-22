@@ -1,7 +1,21 @@
 <template>
   <div v-if="model" class="pending-approval-overlay">
     <div class="pending-approval-overlay-backdrop" aria-hidden="true" />
-    <div class="pending-approval-overlay-card">
+    <div
+      ref="dialogRef"
+      class="pending-approval-overlay-card"
+      role="dialog"
+      aria-modal="true"
+      :aria-labelledby="dialogTitleId"
+      :aria-describedby="dialogDescriptionId"
+      tabindex="-1"
+    >
+      <h2 :id="dialogTitleId" class="pending-approval-overlay-visually-hidden">
+        {{ model.title }}
+      </h2>
+      <p :id="dialogDescriptionId" class="pending-approval-overlay-visually-hidden">
+        {{ model.description }}
+      </p>
       <ApprovalRequestCard
         :model="model"
         :ui-language="uiLanguage"
@@ -14,7 +28,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { UiLanguage } from '../../i18n/uiText'
 import type { UiServerRequest, UiTurnFileChanges } from '../../types/codex'
 import ApprovalRequestCard from './ApprovalRequestCard.vue'
@@ -38,6 +52,36 @@ const model = computed(() =>
     props.fileChanges && props.fileChanges.turnId === props.request.turnId ? props.fileChanges : null,
   ),
 )
+const dialogRef = ref<HTMLElement | null>(null)
+const dialogTitleId = computed(() => `pending-approval-dialog-title-${String(props.request.id)}`)
+const dialogDescriptionId = computed(() => `pending-approval-dialog-description-${String(props.request.id)}`)
+let previousFocusedElement: HTMLElement | null = null
+
+function restoreFocus(): void {
+  if (typeof document === 'undefined') return
+  if (previousFocusedElement && document.contains(previousFocusedElement)) {
+    previousFocusedElement.focus()
+  }
+  previousFocusedElement = null
+}
+
+async function moveFocusIntoDialog(): Promise<void> {
+  if (typeof document === 'undefined') return
+  if (!previousFocusedElement) {
+    const activeElement = document.activeElement
+    previousFocusedElement = activeElement instanceof HTMLElement ? activeElement : null
+  }
+  await nextTick()
+  dialogRef.value?.focus()
+}
+
+onMounted(() => {
+  void moveFocusIntoDialog()
+})
+
+onBeforeUnmount(() => {
+  restoreFocus()
+})
 
 function onSubmit(decision: ApprovalDecision): void {
   emit('submit', {
@@ -70,6 +114,10 @@ function onSkip(): void {
 
 .pending-approval-overlay-card {
   @apply relative z-10;
+}
+
+.pending-approval-overlay-visually-hidden {
+  @apply sr-only;
 }
 
 @media (max-width: 720px) {

@@ -1,5 +1,12 @@
 # 服务端语音转写回退实施计划
 
+> ⚠️ **状态说明（已被后续方案覆盖）**  
+> 本文描述的是 2026-04-10 的“回退到仅浏览器原生语音识别”阶段性方案。  
+> 该方案已被后续私有 RPC 语音 fallback 设计与实现覆盖，请以以下文档为准：  
+> - [docs/plans/2026-04-11-web-local-voice-private-rpc-design.md](./2026-04-11-web-local-voice-private-rpc-design.md)  
+> - [docs/plans/2026-04-11-web-local-voice-private-rpc-implementation-plan.md](./2026-04-11-web-local-voice-private-rpc-implementation-plan.md)  
+> - [docs/runtime/README.md](../runtime/README.md)
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 回退服务端语音转文字能力与相关 CLI 配置，仅保留浏览器原生语音识别入口。

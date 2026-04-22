@@ -85,10 +85,21 @@ const { app, dispose } = createApp({
   password,
   voiceInputFallback: runtimeConfig.voiceInputFallback,
 })
+
+function readHttpsFile(path: string, kind: 'certificate' | 'private key'): Buffer {
+  try {
+    return readFileSync(path)
+  } catch {
+    throw new Error(
+      `Failed to read HTTPS ${kind} file at "${path}". Please verify the path, file permissions, and PEM format.`,
+    )
+  }
+}
+
 const server = runtimeConfig.https
   ? createHttpsServer({
-      cert: readFileSync(runtimeConfig.https.cert),
-      key: readFileSync(runtimeConfig.https.key),
+      cert: readHttpsFile(runtimeConfig.https.cert, 'certificate'),
+      key: readHttpsFile(runtimeConfig.https.key, 'private key'),
     }, app)
   : createHttpServer(app)
 
