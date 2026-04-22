@@ -55,6 +55,30 @@ test('normalizeCliRuntimeConfig rejects invalid port values', () => {
     }),
     /invalid port/i,
   )
+
+  assert.throws(
+    () => normalizeCliRuntimeConfig({
+      port: '123.45',
+      password: false,
+    }),
+    /invalid port/i,
+  )
+
+  assert.throws(
+    () => normalizeCliRuntimeConfig({
+      port: '   ',
+      password: false,
+    }),
+    /invalid port/i,
+  )
+
+  assert.throws(
+    () => normalizeCliRuntimeConfig({
+      port: undefined,
+      password: false,
+    }),
+    /invalid port/i,
+  )
 })
 
 test('formatAccessUrl uses https scheme when tls is enabled', () => {

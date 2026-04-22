@@ -70,8 +70,13 @@ export function normalizeCliRuntimeConfig(
   raw: RawCliRuntimeOptions,
   env: NodeJS.ProcessEnv = process.env,
 ): NormalizedCliRuntimeConfig {
-  const parsedPort = Number.parseInt(raw.port, 10)
-  if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+  if (typeof raw.port !== 'string') {
+    throw new Error(`Invalid port "${String(raw.port)}". Expected an integer between 1 and 65535.`)
+  }
+
+  const normalizedPort = raw.port.trim()
+  const parsedPort = Number(normalizedPort)
+  if (!/^\d+$/.test(normalizedPort) || parsedPort < 1 || parsedPort > 65535) {
     throw new Error(`Invalid port "${raw.port}". Expected an integer between 1 and 65535.`)
   }
 
