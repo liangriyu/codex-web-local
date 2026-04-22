@@ -1382,38 +1382,65 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 .account-center-page {
-  @apply flex-1 min-h-0 overflow-y-auto px-2 py-1;
+  @apply flex-1 min-h-0 overflow-y-auto px-2 py-2;
+  background:
+    radial-gradient(circle at 14% -8%, color-mix(in srgb, #0d9488 24%, transparent), transparent 48%),
+    radial-gradient(circle at 92% 4%, color-mix(in srgb, #1d4ed8 18%, transparent), transparent 42%),
+    var(--color-bg-surface);
 }
 
 .account-center-page-shell {
-  @apply mx-auto w-full max-w-4xl rounded-2xl border p-4 md:p-5;
+  @apply mx-auto w-full max-w-6xl rounded-2xl border p-4 md:p-6;
   border-color: color-mix(in srgb, #14b8a6 20%, var(--color-border-default));
   background:
-    radial-gradient(circle at 92% -14%, rgba(20, 184, 166, 0.24), transparent 44%),
-    linear-gradient(145deg, var(--color-bg-surface), color-mix(in srgb, var(--color-bg-elevated) 72%, #1f2937 28%));
+    radial-gradient(circle at 94% -16%, rgba(20, 184, 166, 0.24), transparent 44%),
+    radial-gradient(circle at 6% -12%, rgba(56, 189, 248, 0.18), transparent 40%),
+    linear-gradient(146deg, var(--color-bg-surface), color-mix(in srgb, var(--color-bg-elevated) 72%, #1f2937 28%));
+  box-shadow:
+    0 26px 60px rgba(2, 6, 23, 0.34),
+    inset 0 1px 0 rgba(148, 163, 184, 0.16);
+  position: relative;
+  overflow: hidden;
+}
+
+.account-center-page-shell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-border-default) 16%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 100% 34px;
+  opacity: 0.2;
 }
 
 .account-center-page-header {
-  @apply mb-4;
+  @apply mb-5 relative;
+  z-index: 1;
 }
 
 .account-center-page-eyebrow {
-  @apply m-0 text-xs tracking-[0.14em] uppercase;
+  @apply m-0 text-[11px] tracking-[0.2em] uppercase;
   color: var(--color-text-muted);
 }
 
 .account-center-page-title {
-  @apply m-0 mt-1 text-xl font-semibold;
+  @apply m-0 mt-1.5 text-[1.7rem] leading-[1.12] font-semibold;
   color: var(--color-text-primary);
+  text-wrap: balance;
 }
 
 .account-center-page-subtitle {
-  @apply m-0 mt-2 text-sm leading-6;
+  @apply m-0 mt-2.5 text-sm leading-6 max-w-2xl;
   color: var(--color-text-secondary);
 }
 
 .account-center-switcher {
-  @apply max-w-xl;
+  @apply w-full relative;
+  z-index: 1;
 }
 
 .content-error {
@@ -1553,6 +1580,26 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 @media (max-width: 720px) {
+  .account-center-page {
+    @apply px-1.5 py-1.5;
+  }
+
+  .account-center-page-shell {
+    @apply rounded-xl px-3 py-3.5;
+  }
+
+  .account-center-page-header {
+    @apply mb-3.5;
+  }
+
+  .account-center-page-title {
+    @apply text-[1.35rem];
+  }
+
+  .account-center-page-subtitle {
+    @apply mt-2 text-[13px] leading-5;
+  }
+
   .sidebar-footer-actions {
     @apply sticky bottom-0 z-20 mt-2 gap-2 px-2 py-2;
     padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
