@@ -140,6 +140,7 @@
                   class="account-center-switcher"
                   :account-profiles="accountProfiles"
                   :active-account-profile-id="activeAccountProfileId"
+                  :account-rate-limit-usage-by-profile-id="accountRateLimitUsageByProfileId"
                   @switch="onSwitchAccountProfile"
                   @align="onAlignAccount"
                   @remove="onRemoveAccountProfile"
@@ -324,7 +325,7 @@ import IconTablerSettings from './components/icons/IconTablerSettings.vue'
 import IconThemeMode from './components/icons/IconThemeMode.vue'
 import { useDesktopState } from './composables/useDesktopState'
 import { tUi, type UiLanguage, type UiTextKey } from './i18n/uiText'
-import type { ComposerSubmitPayload, ReasoningEffort, ThreadScrollState, UiTurnFileChanges, UiWorkspaceDiffMode } from './types/codex'
+import type { ComposerSubmitPayload, ReasoningEffort, ThreadScrollState, UiRateLimitUsage, UiTurnFileChanges, UiWorkspaceDiffMode } from './types/codex'
 import { fetchFilePreview } from './api/codexGateway'
 import { buildApprovalRequestDisplayModel, isApprovalRequestMethod } from './utils/approvalRequestDisplay'
 import { shouldShowThinkingIndicator } from './utils/thinkingIndicatorState'
@@ -433,6 +434,7 @@ const sidebarSearchQuery = ref('')
 const isSidebarSearchVisible = ref(false)
 const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
 const previewPanel = ref<PreviewPanelState | null>(null)
+const accountRateLimitUsageByProfileId = ref<Record<string, UiRateLimitUsage | null>>({})
 const isCreatingThreadFromHome = ref(false)
 let accountAlignmentRefreshTimer: number | null = null
 let accountAlignmentRefreshStartedAtMs = 0
@@ -1181,6 +1183,33 @@ watch(
     if (!hasSelected) {
       newThreadCwd.value = options[0].value
     }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [activeAccountProfileId.value, selectedThreadRateLimitUsage.value] as const,
+  ([profileId, usage]) => {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId || !usage) return
+    accountRateLimitUsageByProfileId.value = {
+      ...accountRateLimitUsageByProfileId.value,
+      [normalizedProfileId]: usage,
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => accountProfiles.value.map((profile) => profile.profileId).join('::'),
+  () => {
+    const activeProfileIds = new Set(accountProfiles.value.map((profile) => profile.profileId))
+    const nextMap: Record<string, UiRateLimitUsage | null> = {}
+    for (const [profileId, usage] of Object.entries(accountRateLimitUsageByProfileId.value)) {
+      if (!activeProfileIds.has(profileId)) continue
+      nextMap[profileId] = usage
+    }
+    accountRateLimitUsageByProfileId.value = nextMap
   },
   { immediate: true },
 )

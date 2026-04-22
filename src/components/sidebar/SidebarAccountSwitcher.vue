@@ -46,6 +46,14 @@
             <div class="account-switcher-manage-main">
               <p class="account-switcher-manage-name">{{ formatProfileLabel(profile) }}</p>
               <p class="account-switcher-manage-meta">{{ formatProfileMeta(profile) }}</p>
+              <div class="account-switcher-manage-quota">
+                <span class="account-switcher-manage-quota-item">
+                  周剩余 {{ resolveQuotaRemainingLabel(profile, 10080) }}
+                </span>
+                <span class="account-switcher-manage-quota-item">
+                  5小时剩余 {{ resolveQuotaRemainingLabel(profile, 300) }}
+                </span>
+              </div>
             </div>
             <div class="account-switcher-manage-actions">
               <button
@@ -77,11 +85,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { UiAccountProfile } from '../../types/codex'
+import type { UiAccountProfile, UiRateLimitUsage } from '../../types/codex'
 
 const props = defineProps<{
   accountProfiles: UiAccountProfile[]
   activeAccountProfileId: string
+  accountRateLimitUsageByProfileId: Record<string, UiRateLimitUsage | null>
 }>()
 
 const emit = defineEmits<{
@@ -169,6 +178,55 @@ function formatProfileMeta(profile: UiAccountProfile): string {
   const tokenLabel = profile.tokenState === 'available' ? 'Token 可用' : 'Token 缺失'
   const statusLabel = profile.status === 'active' ? '活跃' : '备用'
   return `${resolvePlanLabel(profile)} · ${statusLabel} · ${tokenLabel}`
+}
+
+function resolveProfileRateLimitUsage(profile: UiAccountProfile): UiRateLimitUsage | null {
+  return props.accountRateLimitUsageByProfileId[profile.profileId] ?? null
+}
+
+function resolveQuotaRemainingLabel(profile: UiAccountProfile, targetMinutes: number): string {
+  const usage = resolveProfileRateLimitUsage(profile)
+  if (!usage) return '--'
+
+  const windows = (usage.windows ?? []).filter((row) =>
+    typeof row.usedPercent === 'number'
+    && Number.isFinite(row.usedPercent)
+    && typeof row.windowDurationMins === 'number'
+    && Number.isFinite(row.windowDurationMins)
+    && row.windowDurationMins > 0,
+  )
+
+  const exactMatch = windows.find((row) => Math.round(row.windowDurationMins as number) === targetMinutes)
+  const resolved = exactMatch ?? pickNearestWindow(windows, targetMinutes)
+  if (resolved) {
+    return `${Math.max(0, Math.round(100 - resolved.usedPercent))}%`
+  }
+
+  if (typeof usage.remainingPercent === 'number' && Number.isFinite(usage.remainingPercent)) {
+    return `${Math.max(0, Math.round(usage.remainingPercent))}%`
+  }
+  return '--'
+}
+
+function pickNearestWindow(
+  windows: Array<{ usedPercent: number; windowDurationMins: number | null; resetsAt: number | null }>,
+  targetMinutes: number,
+): { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null } | null {
+  let best: { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null } | null = null
+  let minDiff = Number.POSITIVE_INFINITY
+
+  for (const row of windows) {
+    const duration = row.windowDurationMins
+    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) continue
+    const diff = Math.abs(Math.round(duration) - targetMinutes)
+    if (diff < minDiff) {
+      best = row
+      minDiff = diff
+    }
+  }
+
+  const maxAllowedDiff = Math.max(60, Math.round(targetMinutes * 0.1))
+  return minDiff <= maxAllowedDiff ? best : null
 }
 </script>
 
@@ -366,6 +424,24 @@ function formatProfileMeta(profile: UiAccountProfile): string {
   margin: 0.2rem 0 0;
   font-size: 0.67rem;
   color: var(--color-text-muted);
+}
+
+.account-switcher-manage-quota {
+  margin-top: 0.28rem;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.account-switcher-manage-quota-item {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--account-accent) 30%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-bg-surface) 76%, var(--account-accent-soft) 24%);
+  color: var(--color-text-secondary);
+  font-size: 0.64rem;
+  line-height: 1;
+  padding: 0.24rem 0.42rem;
+  white-space: nowrap;
 }
 
 .account-switcher-manage-actions {
