@@ -39,6 +39,24 @@ test('normalizeCliRuntimeConfig returns https configuration when fully specified
   assert.equal(config.voiceInputFallback.enabled, false)
 })
 
+test('normalizeCliRuntimeConfig rejects invalid port values', () => {
+  assert.throws(
+    () => normalizeCliRuntimeConfig({
+      port: 'abc',
+      password: false,
+    }),
+    /invalid port/i,
+  )
+
+  assert.throws(
+    () => normalizeCliRuntimeConfig({
+      port: '70000',
+      password: false,
+    }),
+    /invalid port/i,
+  )
+})
+
 test('formatAccessUrl uses https scheme when tls is enabled', () => {
   assert.equal(formatAccessUrl('192.168.1.2', 3443, true), 'https://192.168.1.2:3443')
   assert.equal(formatAccessUrl(undefined, 3000, false), 'http://localhost:3000')

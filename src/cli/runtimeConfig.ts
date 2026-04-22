@@ -70,6 +70,11 @@ export function normalizeCliRuntimeConfig(
   raw: RawCliRuntimeOptions,
   env: NodeJS.ProcessEnv = process.env,
 ): NormalizedCliRuntimeConfig {
+  const parsedPort = Number.parseInt(raw.port, 10)
+  if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+    throw new Error(`Invalid port "${raw.port}". Expected an integer between 1 and 65535.`)
+  }
+
   const httpsCert = raw.httpsCert?.trim() ?? ''
   const httpsKey = raw.httpsKey?.trim() ?? ''
 
@@ -81,7 +86,7 @@ export function normalizeCliRuntimeConfig(
   }
 
   return {
-    port: Number.parseInt(raw.port, 10),
+    port: parsedPort,
     host: raw.host?.trim() || undefined,
     daemon: raw.daemon === true,
     password: raw.password,
