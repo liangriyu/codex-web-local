@@ -25,25 +25,6 @@
         </div>
       </div>
 
-      <label class="account-switcher-label" for="sidebar-account-switcher-select">切换活跃账号</label>
-      <div class="account-switcher-select-wrap">
-        <select
-          id="sidebar-account-switcher-select"
-          class="account-switcher-select"
-          :value="activeAccountProfileId"
-          @change="onSelect"
-        >
-          <option v-if="visibleProfiles.length === 0" value="" disabled>暂无账号档案</option>
-          <option
-            v-for="profile in visibleProfiles"
-            :key="profile.profileId"
-            :value="profile.profileId"
-          >
-            {{ formatProfileLabel(profile) }}
-          </option>
-        </select>
-      </div>
-
       <div class="account-switcher-actions">
         <button class="account-switcher-add-email-button" type="button" @click="onAddByEmailLogin">
           邮箱登录新增档案
@@ -152,13 +133,6 @@ function isCurrentAccountProfile(profile: UiAccountProfile): boolean {
   const active = activeProfile.value
   if (!active) return false
   return getIdentityKey(profile) === getIdentityKey(active)
-}
-
-function onSelect(event: Event): void {
-  const target = event.target as HTMLSelectElement | null
-  const profileId = target?.value?.trim() ?? ''
-  if (!profileId || profileId === props.activeAccountProfileId) return
-  emit('switch', profileId)
 }
 
 function onSwitch(profileId: string): void {
@@ -306,25 +280,6 @@ function formatProfileMeta(profile: UiAccountProfile): string {
   color: var(--color-warning-text);
   border-color: color-mix(in srgb, var(--color-warning-text) 42%, transparent);
   background: var(--account-warn-soft);
-}
-
-.account-switcher-label {
-  font-size: 0.73rem;
-  color: var(--color-text-secondary);
-}
-
-.account-switcher-select-wrap {
-  position: relative;
-}
-
-.account-switcher-select {
-  width: 100%;
-  border: 1px solid var(--color-border-default);
-  border-radius: 0.65rem;
-  padding: 0.52rem 0.65rem;
-  background: color-mix(in srgb, var(--color-bg-surface) 82%, var(--color-bg-elevated) 18%);
-  color: var(--color-text-primary);
-  font-size: 0.82rem;
 }
 
 .account-switcher-actions {
