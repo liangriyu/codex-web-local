@@ -13,6 +13,11 @@ const router = createRouter({
       component: EmptyRouteView,
     },
     {
+      path: '/account-center',
+      name: 'accountCenter',
+      component: EmptyRouteView,
+    },
+    {
       path: '/thread/:threadId',
       name: 'thread',
       component: EmptyRouteView,

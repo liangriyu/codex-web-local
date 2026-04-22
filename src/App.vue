@@ -58,17 +58,17 @@
           @archive="onArchiveThread" @start-new-thread="onStartNewThread" @rename-thread="onRenameThread" @rename-project="onRenameProject"
           @remove-project="onRemoveProject" @reorder-project="onReorderProject" />
 
-        <SidebarAccountSwitcher
-          v-if="!isSidebarCollapsed"
-          class="sidebar-account-switcher-host"
-          :account-profiles="accountProfiles"
-          :active-account-profile-id="activeAccountProfileId"
-          @switch="onSwitchAccountProfile"
-          @align="onAlignAccount"
-          @remove="onRemoveAccountProfile"
-        />
-
         <div v-if="!isSidebarCollapsed" class="sidebar-footer-actions">
+          <button
+            class="sidebar-footer-button"
+            type="button"
+            :aria-pressed="isAccountCenterView"
+            aria-label="账号中心"
+            title="账号中心"
+            @click="onOpenAccountCenter"
+          >
+            <IconTablerSettings class="sidebar-footer-button-icon" />
+          </button>
           <button
             class="sidebar-footer-button"
             type="button"
@@ -110,7 +110,7 @@
           </template>
           <template #actions>
             <button
-              v-if="!isHomeRoute"
+              v-if="!isHomeRoute && !isAccountCenterView"
               class="content-header-diff-chip"
               type="button"
               :disabled="!canOpenWorkspaceDiff"
@@ -125,7 +125,28 @@
 
         <section class="content-body">
           <p v-if="error" class="content-error">{{ error }}</p>
-          <template v-if="isHomeRoute">
+          <template v-if="isAccountCenterView">
+            <section class="account-center-page">
+              <div class="account-center-page-shell">
+                <header class="account-center-page-header">
+                  <p class="account-center-page-eyebrow">Account Center</p>
+                  <h2 class="account-center-page-title">账号管理</h2>
+                  <p class="account-center-page-subtitle">
+                    管理当前会话账号、切换活跃档案、补充邮箱登录档案。
+                  </p>
+                </header>
+                <SidebarAccountSwitcher
+                  class="account-center-switcher"
+                  :account-profiles="accountProfiles"
+                  :active-account-profile-id="activeAccountProfileId"
+                  @switch="onSwitchAccountProfile"
+                  @align="onAlignAccount"
+                  @remove="onRemoveAccountProfile"
+                />
+              </div>
+            </section>
+          </template>
+          <template v-else-if="isHomeRoute">
             <div class="content-grid">
               <div class="new-thread-empty">
                 <p class="new-thread-hero">{{ t('app.letsBuild') }}</p>
@@ -298,6 +319,7 @@ import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vu
 import SidebarAccountSwitcher from './components/sidebar/SidebarAccountSwitcher.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
+import IconTablerSettings from './components/icons/IconTablerSettings.vue'
 import IconThemeMode from './components/icons/IconThemeMode.vue'
 import { useDesktopState } from './composables/useDesktopState'
 import { tUi, type UiLanguage, type UiTextKey } from './i18n/uiText'
@@ -440,6 +462,7 @@ const knownThreadIdSet = computed(() => {
 })
 
 const isHomeRoute = computed(() => route.name === 'home')
+const isAccountCenterView = computed(() => route.name === 'accountCenter')
 const currentProjectName = computed(() => {
   const activeProjectName = selectedThread.value?.projectName?.trim() ?? ''
   if (activeProjectName.length > 0) return activeProjectName
@@ -456,6 +479,7 @@ const activeComposerCwd = computed(() => (isHomeRoute.value ? newThreadCwd.value
 const composerWorkspaceModel = computed(() => getWorkspaceModelForCwd(activeComposerCwd.value))
 const composerPersistedServerRequests = computed(() => composerWorkspaceModel.value?.approvals.persisted ?? [])
 const contentTitle = computed(() => {
+  if (isAccountCenterView.value) return '账号中心'
   if (isHomeRoute.value) return t('app.newThread')
   return selectedThread.value?.title ?? t('app.chooseThread')
 })
@@ -543,7 +567,7 @@ const filteredMessages = computed(() =>
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
 const canOpenWorkspaceDiff = computed(() => {
-  if (isHomeRoute.value) return false
+  if (isHomeRoute.value || isAccountCenterView.value) return false
   const cwd = selectedThread.value?.cwd?.trim() ?? ''
   return cwd.length > 0
 })
@@ -633,6 +657,13 @@ function onStartNewThreadFromToolbar(): void {
   }
   if (isHomeRoute.value) return
   void router.push({ name: 'home' })
+}
+
+function onOpenAccountCenter(): void {
+  previewPanel.value = null
+  if (!isAccountCenterView.value) {
+    void router.push({ name: 'accountCenter' })
+  }
 }
 
 function onRenameThread(payload: { threadId: string; title: string }): void {
@@ -1084,10 +1115,10 @@ watch(
   async (threadId) => {
     if (!hasInitialized.value) return
     if (isRouteSyncInProgress.value) return
-    if (isHomeRoute.value) return
+    if (isHomeRoute.value || isAccountCenterView.value) return
 
     if (!threadId) {
-      if (route.name !== 'home') {
+      if (route.name !== 'home' && route.name !== 'accountCenter') {
         await router.replace({ name: 'home' })
       }
       return
@@ -1266,6 +1297,12 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
   color: var(--color-text-secondary);
 }
 
+.sidebar-footer-button[aria-pressed='true'] {
+  border-color: color-mix(in srgb, #14b8a6 42%, var(--color-border-default));
+  background: color-mix(in srgb, #14b8a6 16%, var(--color-bg-subtle));
+  color: #14b8a6;
+}
+
 .sidebar-footer-button:hover {
   background: var(--color-bg-subtle);
   color: var(--color-text-primary);
@@ -1301,6 +1338,41 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 
 .content-body {
   @apply flex-1 min-h-0 w-full flex flex-col gap-3 pt-1 pb-4 overflow-y-hidden overflow-x-visible;
+}
+
+.account-center-page {
+  @apply flex-1 min-h-0 overflow-y-auto px-2 py-1;
+}
+
+.account-center-page-shell {
+  @apply mx-auto w-full max-w-4xl rounded-2xl border p-4 md:p-5;
+  border-color: color-mix(in srgb, #14b8a6 20%, var(--color-border-default));
+  background:
+    radial-gradient(circle at 92% -14%, rgba(20, 184, 166, 0.24), transparent 44%),
+    linear-gradient(145deg, var(--color-bg-surface), color-mix(in srgb, var(--color-bg-elevated) 72%, #1f2937 28%));
+}
+
+.account-center-page-header {
+  @apply mb-4;
+}
+
+.account-center-page-eyebrow {
+  @apply m-0 text-xs tracking-[0.14em] uppercase;
+  color: var(--color-text-muted);
+}
+
+.account-center-page-title {
+  @apply m-0 mt-1 text-xl font-semibold;
+  color: var(--color-text-primary);
+}
+
+.account-center-page-subtitle {
+  @apply m-0 mt-2 text-sm leading-6;
+  color: var(--color-text-secondary);
+}
+
+.account-center-switcher {
+  @apply max-w-xl;
 }
 
 .content-error {
