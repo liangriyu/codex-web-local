@@ -50,70 +50,52 @@
         </button>
       </div>
 
-      <button class="account-switcher-mobile-manage-button" type="button" @click="openMobileSheet">
-        管理账号
-      </button>
-    </div>
+      <section class="account-switcher-manage-section" aria-label="account-manage-list">
+        <header class="account-switcher-manage-header">
+          <p class="account-switcher-manage-title">管理账号</p>
+          <p class="account-switcher-manage-subtitle">直接在页面中切换或删除档案</p>
+        </header>
 
-    <Teleport to="body">
-      <div
-        v-if="isMobileSheetOpen"
-        class="account-switcher-sheet-backdrop"
-        @click.self="closeMobileSheet"
-      >
-        <section class="account-switcher-sheet" role="dialog" aria-modal="true" aria-label="账号管理面板">
-          <header class="account-switcher-sheet-head">
-            <div>
-              <p class="account-switcher-sheet-title">账号管理面板</p>
-              <p class="account-switcher-sheet-subtitle">共 {{ visibleProfiles.length }} 个档案</p>
+        <ul v-if="visibleProfiles.length > 0" class="account-switcher-manage-list">
+          <li
+            v-for="profile in visibleProfiles"
+            :key="`manage:${profile.profileId}`"
+            class="account-switcher-manage-item"
+          >
+            <div class="account-switcher-manage-main">
+              <p class="account-switcher-manage-name">{{ formatProfileLabel(profile) }}</p>
+              <p class="account-switcher-manage-meta">{{ formatProfileMeta(profile) }}</p>
             </div>
-            <button class="account-switcher-sheet-close" type="button" @click="closeMobileSheet">
-              收起
-            </button>
-          </header>
-
-          <ul v-if="visibleProfiles.length > 0" class="account-switcher-sheet-list">
-            <li
-              v-for="profile in visibleProfiles"
-              :key="`sheet:${profile.profileId}`"
-              class="account-switcher-sheet-item"
-            >
-              <div class="account-switcher-sheet-main">
-                <p class="account-switcher-sheet-name">{{ formatProfileLabel(profile) }}</p>
-                <p class="account-switcher-sheet-meta">{{ formatProfileMeta(profile) }}</p>
-              </div>
-              <div class="account-switcher-sheet-actions">
-                <button
-                  class="account-switcher-switch-button"
-                  type="button"
-                  :disabled="isCurrentAccountProfile(profile)"
-                  :title="isCurrentAccountProfile(profile) ? '当前账号' : '切换到该账号'"
-                  @click="onSwitch(profile.profileId)"
-                >
-                  {{ isCurrentAccountProfile(profile) ? '当前' : '切换' }}
-                </button>
-                <button
-                  class="account-switcher-remove-button"
-                  type="button"
-                  :disabled="isCurrentAccountProfile(profile)"
-                  :title="isCurrentAccountProfile(profile) ? '当前档案不可删除' : '删除档案'"
-                  @click="onRemove(profile)"
-                >
-                  {{ isCurrentAccountProfile(profile) ? '当前档案不可删除' : '删除' }}
-                </button>
-              </div>
-            </li>
-          </ul>
-
-          <p v-else class="account-switcher-sheet-empty">暂无账号档案</p>
-        </section>
-      </div>
-    </Teleport>
+            <div class="account-switcher-manage-actions">
+              <button
+                class="account-switcher-switch-button"
+                type="button"
+                :disabled="isCurrentAccountProfile(profile)"
+                :title="isCurrentAccountProfile(profile) ? '当前账号' : '切换到该账号'"
+                @click="onSwitch(profile.profileId)"
+              >
+                {{ isCurrentAccountProfile(profile) ? '当前' : '切换' }}
+              </button>
+              <button
+                class="account-switcher-remove-button"
+                type="button"
+                :disabled="isCurrentAccountProfile(profile)"
+                :title="isCurrentAccountProfile(profile) ? '当前档案不可删除' : '删除档案'"
+                @click="onRemove(profile)"
+              >
+                {{ isCurrentAccountProfile(profile) ? '当前档案不可删除' : '删除' }}
+              </button>
+            </div>
+          </li>
+        </ul>
+        <p v-else class="account-switcher-manage-empty">暂无账号档案</p>
+      </section>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import type { UiAccountProfile } from '../../types/codex'
 
 const props = defineProps<{
@@ -126,8 +108,6 @@ const emit = defineEmits<{
   align: []
   remove: [profileId: string]
 }>()
-
-const isMobileSheetOpen = ref(false)
 
 function parseIsoTime(value: string | null): number {
   if (!value) return 0
@@ -181,24 +161,14 @@ function onSelect(event: Event): void {
   emit('switch', profileId)
 }
 
-function openMobileSheet(): void {
-  isMobileSheetOpen.value = true
-}
-
-function closeMobileSheet(): void {
-  isMobileSheetOpen.value = false
-}
-
 function onSwitch(profileId: string): void {
   const normalizedProfileId = profileId.trim()
   if (!normalizedProfileId || normalizedProfileId === props.activeAccountProfileId) return
   emit('switch', normalizedProfileId)
-  closeMobileSheet()
 }
 
 function onAddByEmailLogin(): void {
   emit('align')
-  closeMobileSheet()
 }
 
 function onRemove(profile: UiAccountProfile): void {
@@ -206,7 +176,6 @@ function onRemove(profile: UiAccountProfile): void {
   if (!normalizedProfileId) return
   if (isCurrentAccountProfile(profile)) return
   emit('remove', normalizedProfileId)
-  closeMobileSheet()
 }
 
 function formatProfileLabel(profile: UiAccountProfile): string {
@@ -227,20 +196,6 @@ function formatProfileMeta(profile: UiAccountProfile): string {
   const statusLabel = profile.status === 'active' ? '活跃' : '备用'
   return `${resolvePlanLabel(profile)} · ${statusLabel} · ${tokenLabel}`
 }
-
-function onWindowKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape') return
-  if (!isMobileSheetOpen.value) return
-  closeMobileSheet()
-}
-
-onMounted(() => {
-  window.addEventListener('keydown', onWindowKeydown)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onWindowKeydown)
-})
 </script>
 
 <style scoped>
@@ -386,9 +341,6 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
   transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
-}
-
-.account-switcher-add-email-button {
   background: color-mix(in srgb, var(--color-bg-surface) 74%, var(--account-accent-soft) 26%);
   color: var(--color-text-primary);
   font-weight: 620;
@@ -399,19 +351,72 @@ onBeforeUnmount(() => {
   box-shadow: 0 10px 20px rgba(2, 6, 23, 0.12);
 }
 
-.account-switcher-mobile-manage-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--account-accent) 34%, var(--color-border-default));
-  background: color-mix(in srgb, var(--account-accent-soft) 68%, var(--color-bg-surface) 32%);
-  color: var(--account-accent);
-  border-radius: 0.7rem;
-  padding: 0.5rem 0.62rem;
-  font-size: 0.78rem;
+.account-switcher-manage-section {
+  margin-top: 0.22rem;
+  border: 1px solid color-mix(in srgb, var(--account-accent) 22%, var(--color-border-default));
+  border-radius: 0.82rem;
+  padding: 0.6rem;
+  background: color-mix(in srgb, var(--color-bg-surface) 80%, var(--color-bg-elevated) 20%);
+}
+
+.account-switcher-manage-header {
+  margin-bottom: 0.52rem;
+}
+
+.account-switcher-manage-title {
+  margin: 0;
+  font-size: 0.8rem;
   font-weight: 620;
-  text-align: center;
-  cursor: pointer;
+  color: var(--color-text-primary);
+}
+
+.account-switcher-manage-subtitle {
+  margin: 0.18rem 0 0;
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+}
+
+.account-switcher-manage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.account-switcher-manage-item {
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.75rem;
+  padding: 0.52rem;
+  background: color-mix(in srgb, var(--color-bg-surface) 82%, var(--color-bg-elevated) 18%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.account-switcher-manage-main {
+  min-width: 0;
+}
+
+.account-switcher-manage-name {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.account-switcher-manage-meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.67rem;
+  color: var(--color-text-muted);
+}
+
+.account-switcher-manage-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 
 .account-switcher-remove-button,
@@ -438,105 +443,7 @@ onBeforeUnmount(() => {
   opacity: 0.55;
 }
 
-.account-switcher-sheet-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  background: rgba(2, 6, 23, 0.48);
-  display: flex;
-  align-items: flex-end;
-  justify-content: stretch;
-}
-
-.account-switcher-sheet {
-  width: 100%;
-  max-height: 78vh;
-  overflow-y: auto;
-  border-top-left-radius: 1rem;
-  border-top-right-radius: 1rem;
-  padding: 0.85rem 0.9rem 1rem;
-  border-top: 1px solid color-mix(in srgb, var(--account-accent) 30%, var(--color-border-default));
-  background:
-    radial-gradient(circle at top right, var(--account-glow), transparent 52%),
-    linear-gradient(180deg, var(--color-bg-surface), var(--color-bg-elevated));
-  box-shadow: 0 -16px 38px rgba(2, 6, 23, 0.35);
-}
-
-.account-switcher-sheet-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.6rem;
-  margin-bottom: 0.65rem;
-}
-
-.account-switcher-sheet-title {
-  margin: 0;
-  font-size: 0.88rem;
-  color: var(--color-text-primary);
-  font-weight: 650;
-}
-
-.account-switcher-sheet-subtitle {
-  margin: 0.18rem 0 0;
-  font-size: 0.72rem;
-  color: var(--color-text-muted);
-}
-
-.account-switcher-sheet-close {
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
-  border-radius: 0.52rem;
-  padding: 0.3rem 0.56rem;
-  font-size: 0.72rem;
-  cursor: pointer;
-}
-
-.account-switcher-sheet-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.account-switcher-sheet-item {
-  border: 1px solid var(--color-border-default);
-  border-radius: 0.75rem;
-  padding: 0.52rem;
-  background: color-mix(in srgb, var(--color-bg-surface) 82%, var(--color-bg-elevated) 18%);
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.account-switcher-sheet-main {
-  min-width: 0;
-}
-
-.account-switcher-sheet-name {
-  margin: 0;
-  font-size: 0.76rem;
-  line-height: 1.35;
-  color: var(--color-text-primary);
-  word-break: break-all;
-}
-
-.account-switcher-sheet-meta {
-  margin: 0.2rem 0 0;
-  font-size: 0.67rem;
-  color: var(--color-text-muted);
-}
-
-.account-switcher-sheet-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.account-switcher-sheet-empty {
+.account-switcher-manage-empty {
   margin: 0;
   font-size: 0.76rem;
   color: var(--color-text-muted);

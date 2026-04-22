@@ -60,7 +60,7 @@
 
         <div v-if="!isSidebarCollapsed" class="sidebar-footer-actions">
           <button
-            class="sidebar-footer-button"
+            class="sidebar-footer-button sidebar-footer-button-account-center"
             type="button"
             :aria-pressed="isAccountCenterView"
             aria-label="账号中心"
@@ -68,6 +68,7 @@
             @click="onOpenAccountCenter"
           >
             <IconTablerSettings class="sidebar-footer-button-icon" />
+            <span class="sidebar-footer-button-label">账号中心</span>
           </button>
           <button
             class="sidebar-footer-button"
@@ -1293,8 +1294,15 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 .sidebar-footer-button {
-  @apply h-7 w-7 rounded-md border border-transparent bg-transparent flex items-center justify-center transition;
+  @apply h-7 w-7 rounded-md border border-transparent bg-transparent inline-flex items-center justify-center transition;
   color: var(--color-text-secondary);
+}
+
+.sidebar-footer-button-account-center {
+  @apply w-auto px-2.5 gap-1.5;
+  border-color: color-mix(in srgb, #14b8a6 30%, var(--color-border-default));
+  background: color-mix(in srgb, #14b8a6 14%, var(--color-bg-subtle));
+  color: #14b8a6;
 }
 
 .sidebar-footer-button[aria-pressed='true'] {
@@ -1310,6 +1318,10 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 
 .sidebar-footer-button-icon {
   @apply w-4 h-4;
+}
+
+.sidebar-footer-button-label {
+  @apply hidden text-[11px] font-semibold tracking-[0.04em];
 }
 
 .sidebar-footer-language-mark {
@@ -1512,6 +1524,29 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 @media (max-width: 720px) {
+  .sidebar-footer-actions {
+    @apply sticky bottom-0 z-20 mt-2 gap-2 px-2 py-2;
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid color-mix(in srgb, #14b8a6 22%, var(--color-border-default));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--color-bg-app) 55%, transparent), var(--color-bg-app) 34%),
+      color-mix(in srgb, var(--color-bg-app) 92%, #00101a 8%);
+    backdrop-filter: blur(8px);
+  }
+
+  .sidebar-footer-button {
+    @apply h-8 w-8 rounded-lg;
+  }
+
+  .sidebar-footer-button-account-center {
+    @apply h-10 flex-1 justify-center rounded-xl px-3;
+    box-shadow: 0 8px 20px rgba(20, 184, 166, 0.22);
+  }
+
+  .sidebar-footer-button-label {
+    @apply inline;
+  }
+
   .new-thread-empty {
     @apply px-4;
   }
