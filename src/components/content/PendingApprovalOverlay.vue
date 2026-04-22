@@ -65,7 +65,7 @@ function restoreFocus(): void {
   previousFocusedElement = null
 }
 
-async function moveFocusIntoDialog(): Promise<void> {
+async function setDialogFocus(): Promise<void> {
   if (typeof document === 'undefined') return
   if (!previousFocusedElement) {
     const activeElement = document.activeElement
@@ -76,7 +76,7 @@ async function moveFocusIntoDialog(): Promise<void> {
 }
 
 onMounted(() => {
-  void moveFocusIntoDialog()
+  void setDialogFocus()
 })
 
 onBeforeUnmount(() => {
