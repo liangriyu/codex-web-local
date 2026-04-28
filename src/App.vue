@@ -51,12 +51,25 @@
           v-if="!isSidebarCollapsed"
           :selected-thread-id="selectedThreadId" :is-loading="isLoadingThreads"
           :search-query="sidebarSearchQuery"
+          :shared-session-snapshot-by-thread-id="sharedSessionSnapshotByThreadId"
+          :live-approval-thread-id-set="liveApprovalThreadIdSet"
           :ui-language="uiLanguage"
           @select="onSelectThread"
           @archive="onArchiveThread" @start-new-thread="onStartNewThread" @rename-thread="onRenameThread" @rename-project="onRenameProject"
           @remove-project="onRemoveProject" @reorder-project="onReorderProject" />
 
         <div v-if="!isSidebarCollapsed" class="sidebar-footer-actions">
+          <button
+            class="sidebar-footer-button sidebar-footer-button-account-center"
+            type="button"
+            :aria-pressed="isAccountCenterView"
+            aria-label="账号中心"
+            title="账号中心"
+            @click="onOpenAccountCenter"
+          >
+            <IconTablerSettings class="sidebar-footer-button-icon" />
+            <span class="sidebar-footer-button-label">账号中心</span>
+          </button>
           <button
             class="sidebar-footer-button"
             type="button"
@@ -98,21 +111,44 @@
           </template>
           <template #actions>
             <button
-              v-if="!isHomeRoute"
+              v-if="!isHomeRoute && !isAccountCenterView"
               class="content-header-diff-chip"
               type="button"
               :disabled="!canOpenWorkspaceDiff"
               @click="onOpenWorkspaceDiff"
             >
               <span class="content-header-diff-icon">+</span>
-              <span class="content-header-diff-add">+{{ workspaceDiffTotals.additions }}</span>
-              <span class="content-header-diff-del">-{{ workspaceDiffTotals.deletions }}</span>
+              <span class="content-header-diff-add">+{{ headerDiffTotals.additions }}</span>
+              <span class="content-header-diff-del">-{{ headerDiffTotals.deletions }}</span>
             </button>
           </template>
         </ContentHeader>
 
         <section class="content-body">
-          <template v-if="isHomeRoute">
+          <p v-if="error" class="content-error">{{ error }}</p>
+          <template v-if="isAccountCenterView">
+            <section class="account-center-page">
+              <div class="account-center-page-shell">
+                <header class="account-center-page-header">
+                  <p class="account-center-page-eyebrow">Account Center</p>
+                  <h2 class="account-center-page-title">账号管理</h2>
+                  <p class="account-center-page-subtitle">
+                    管理当前会话账号、切换活跃档案、补充邮箱登录档案。
+                  </p>
+                </header>
+                <SidebarAccountSwitcher
+                  class="account-center-switcher"
+                  :account-profiles="accountProfiles"
+                  :active-account-profile-id="activeAccountProfileId"
+                  :account-rate-limit-usage-by-profile-id="accountRateLimitUsageByProfileId"
+                  @switch="onSwitchAccountProfile"
+                  @align="onAlignAccount"
+                  @remove="onRemoveAccountProfile"
+                />
+              </div>
+            </section>
+          </template>
+          <template v-else-if="isHomeRoute">
             <div class="content-grid">
               <div class="new-thread-empty">
                 <p class="new-thread-hero">{{ t('app.letsBuild') }}</p>
@@ -126,7 +162,12 @@
                 :selected-reasoning-effort="selectedReasoningEffort"
                 :selected-chat-mode="selectedChatMode"
                 :is-turn-in-progress="false"
-                :thread-branch="selectedThread?.branch ?? ''"
+                :thread-branch="composerWorkspaceModel?.branch.currentBranch || selectedThread?.branch || ''"
+                :workspace-model="composerWorkspaceModel"
+                :workspace-branch-state="null"
+                :persisted-server-requests="composerPersistedServerRequests"
+                :global-live-request-count="globalLiveServerRequests.length"
+                :global-persisted-request-count="globalPersistedServerRequests.length"
                 :context-usage="selectedThreadContextUsage"
                 :rate-limit-usage="selectedThreadRateLimitUsage"
                 :is-compacting-context="isCompactingSelectedThreadContext"
@@ -136,6 +177,11 @@
                 @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort"
                 @update:selected-chat-mode="setSelectedChatMode"
+                @refresh-branches="onRefreshWorkspaceBranches"
+                @switch-branch="onSwitchWorkspaceBranch"
+                @create-branch="onCreateWorkspaceBranch"
+                @push-branch="onPushWorkspaceBranch"
+                @dismiss-persisted-request="onDismissPersistedServerRequest"
                 @compact-context="onCompactContext" />
             </div>
           </template>
@@ -145,7 +191,9 @@
                 <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages"
                   :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
                   :project-cwd="selectedThread?.cwd ?? ''"
+                  :turn-file-changes-timeline="selectedThreadFileChangeTimeline"
                   :file-changes="selectedThreadFileChanges"
+                  :floating-request-id="selectedPrimaryApprovalRequestId"
                   :ui-language="uiLanguage"
                   :is-thinking-indicator-visible="isThinkingIndicatorVisible"
                   :pending-requests="selectedThreadServerRequests"
@@ -153,7 +201,19 @@
                   @respond-server-request="onRespondServerRequest"
                   @open-file-reference="onOpenFileReference"
                   @open-file-diff="onOpenFileDiff"
-                  @open-workspace-diff="onOpenWorkspaceDiff" />
+                  @open-workspace-diff="onOpenWorkspaceDiff"
+                  @undo-thread-file-change="onUndoThreadFileChange"
+                  @reapply-thread-file-change="onReapplyThreadFileChange">
+                  <template #prepend>
+                    <SharedSessionStatusCard
+                      v-if="selectedSharedSessionSnapshot"
+                      :snapshot="selectedSharedSessionSnapshot"
+                      :live-approval-count="selectedLiveApprovalCount"
+                      :persisted-approval-count="selectedPersistedApprovalCount"
+                      :ui-language="uiLanguage"
+                    />
+                  </template>
+                </ThreadConversation>
               </div>
 
               <CodePreviewPanel
@@ -161,12 +221,26 @@
                 :panel="previewPanel"
                 :cwd="selectedThread?.cwd ?? ''"
                 :matched-file-diff="previewMatchedDiff"
+                :workspace-model="selectedWorkspaceModel"
+                :ui-language="uiLanguage"
                 :close-label="t('app.closeCodePreview')"
+                @change-workspace-mode="onChangeWorkspaceDiffMode"
+                @update-workspace-base-branch="onUpdateWorkspaceBaseBranch"
                 @close="onCloseFilePreview"
               />
             </div>
 
             <div class="content-composer-row">
+              <div v-if="selectedPrimaryApprovalRequest" class="content-approval-overlay-host">
+                <PendingApprovalOverlay
+                  :request="selectedPrimaryApprovalRequest"
+                  :file-changes="selectedThreadFileChanges"
+                  :ui-language="uiLanguage"
+                  @submit="onRespondServerRequest"
+                  @skip="onRespondServerRequest"
+                  @open-workspace-diff="onOpenWorkspaceDiff"
+                />
+              </div>
               <section v-if="selectedQueuedMessages.length > 0" class="content-queued-messages" aria-live="polite">
                 <p class="content-queued-messages-title">{{ t('app.queuedMessagesTitle', { count: selectedQueuedMessages.length }) }}</p>
                 <ul class="content-queued-messages-list">
@@ -200,7 +274,12 @@
                 :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort"
                 :selected-chat-mode="selectedChatMode"
-                :thread-branch="selectedThread?.branch ?? ''"
+                :thread-branch="composerWorkspaceModel?.branch.currentBranch || selectedThread?.branch || ''"
+                :workspace-model="composerWorkspaceModel"
+                :workspace-branch-state="null"
+                :persisted-server-requests="composerPersistedServerRequests"
+                :global-live-request-count="globalLiveServerRequests.length"
+                :global-persisted-request-count="globalPersistedServerRequests.length"
                 :context-usage="selectedThreadContextUsage"
                 :rate-limit-usage="selectedThreadRateLimitUsage"
                 :is-compacting-context="isCompactingSelectedThreadContext"
@@ -210,6 +289,11 @@
                 @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort"
                 @update:selected-chat-mode="setSelectedChatMode"
+                @refresh-branches="onRefreshWorkspaceBranches"
+                @switch-branch="onSwitchWorkspaceBranch"
+                @create-branch="onCreateWorkspaceBranch"
+                @push-branch="onPushWorkspaceBranch"
+                @dismiss-persisted-request="onDismissPersistedServerRequest"
                 @interrupt="onInterruptTurn"
                 @compact-context="onCompactContext" />
               </div>
@@ -226,19 +310,25 @@ import { useRoute, useRouter } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
+import PendingApprovalOverlay from './components/content/PendingApprovalOverlay.vue'
+import SharedSessionStatusCard from './components/content/SharedSessionStatusCard.vue'
 import ThreadConversation from './components/content/ThreadConversation.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
 import ComposerDropdown from './components/content/ComposerDropdown.vue'
 import CodePreviewPanel from './components/content/CodePreviewPanel.vue'
 import type { PreviewPanelState } from './components/content/CodePreviewPanel.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
+import SidebarAccountSwitcher from './components/sidebar/SidebarAccountSwitcher.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
+import IconTablerSettings from './components/icons/IconTablerSettings.vue'
 import IconThemeMode from './components/icons/IconThemeMode.vue'
 import { useDesktopState } from './composables/useDesktopState'
 import { tUi, type UiLanguage, type UiTextKey } from './i18n/uiText'
-import type { ComposerSubmitPayload, ReasoningEffort, ThreadScrollState, UiTurnFileChanges } from './types/codex'
-import { fetchFilePreview, fetchWorkspaceChanges } from './api/codexGateway'
+import type { ComposerSubmitPayload, ReasoningEffort, ThreadScrollState, UiRateLimitUsage, UiTurnFileChanges, UiWorkspaceDiffMode } from './types/codex'
+import { fetchFilePreview } from './api/codexGateway'
+import { buildApprovalRequestDisplayModel, isApprovalRequestMethod } from './utils/approvalRequestDisplay'
+import { shouldShowThinkingIndicator } from './utils/thinkingIndicatorState'
 import {
   normalizePathSeparators,
   getBasename,
@@ -248,6 +338,8 @@ import {
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const UI_THEME_STORAGE_KEY = 'codex-web-local.ui-theme.v1'
 const UI_LANGUAGE_STORAGE_KEY = 'codex-web-local.ui-language.v1'
+const ACCOUNT_ALIGNMENT_REFRESH_INTERVAL_MS = 2000
+const ACCOUNT_ALIGNMENT_REFRESH_DURATION_MS = 30000
 type ThemeMode = 'light' | 'dark' | 'auto'
 
 const {
@@ -256,12 +348,23 @@ const {
   selectedThread,
   selectedThreadScrollState,
   selectedThreadServerRequests,
+  selectedThreadPersistedServerRequests,
+  selectedSharedSessionSnapshot,
+  globalLiveServerRequests,
+  liveApprovalThreadIdSet,
+  globalPersistedServerRequests,
+  selectedWorkspaceModel,
+  selectedWorkspaceDiffTotals,
+  selectedThreadFileChangeTimeline,
   selectedThreadFileChanges,
   selectedQueuedMessages,
   selectedThreadContextUsage,
   selectedThreadRateLimitUsage,
+  accountProfiles,
+  activeAccountProfileId,
   isCompactingSelectedThreadContext,
   selectedLiveOverlay,
+  sharedSessionSnapshotByThreadId,
   selectedThreadId,
   availableModelIds,
   selectedModelId,
@@ -284,10 +387,30 @@ const {
   sendMessageToNewThread,
   interruptSelectedThreadTurn,
   compactSelectedThreadContext,
+  getWorkspaceModelForCwd,
+  refreshWorkspaceBranchStateForCwd,
+  refreshWorkspacePushStatusForCwd,
+  refreshSelectedWorkspaceDiffTotals,
+  fetchWorkspaceDiffSnapshotForMode,
+  openPreferredWorkspaceDiffSnapshot,
+  setWorkspaceDiffMode,
+  setWorkspaceBaseBranch,
+  switchSelectedWorkspaceBranch,
+  createAndSwitchSelectedWorkspaceBranch,
+  pushSelectedWorkspaceBranch,
+  switchWorkspaceBranchForCwd,
+  createAndSwitchWorkspaceBranchForCwd,
+  pushWorkspaceBranchForCwd,
+  undoLatestThreadFileChange,
+  reapplyLatestThreadFileChange,
   setSelectedModelId,
   setSelectedReasoningEffort,
   setSelectedChatMode,
+  switchAccountProfile,
+  removeAccountProfile,
+  startAccountAlignment,
   respondToPendingServerRequest,
+  dismissPersistedServerRequests,
   renameProject,
   removeProject,
   reorderProject,
@@ -311,8 +434,20 @@ const sidebarSearchQuery = ref('')
 const isSidebarSearchVisible = ref(false)
 const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
 const previewPanel = ref<PreviewPanelState | null>(null)
-const workspaceDiffTotals = ref({ additions: 0, deletions: 0 })
+const accountRateLimitUsageByProfileId = ref<Record<string, UiRateLimitUsage | null>>({})
 const isCreatingThreadFromHome = ref(false)
+let accountAlignmentRefreshTimer: number | null = null
+let accountAlignmentRefreshStartedAtMs = 0
+const workspaceDiffTotals = computed(() => selectedWorkspaceDiffTotals.value)
+const headerDiffTotals = computed(() => {
+  if (previewPanel.value?.kind === 'diff') {
+    return {
+      additions: previewPanel.value.totalAdditions,
+      deletions: previewPanel.value.totalDeletions,
+    }
+  }
+  return workspaceDiffTotals.value
+})
 
 const routeThreadId = computed(() => {
   const rawThreadId = route.params.threadId
@@ -330,6 +465,7 @@ const knownThreadIdSet = computed(() => {
 })
 
 const isHomeRoute = computed(() => route.name === 'home')
+const isAccountCenterView = computed(() => route.name === 'accountCenter')
 const currentProjectName = computed(() => {
   const activeProjectName = selectedThread.value?.projectName?.trim() ?? ''
   if (activeProjectName.length > 0) return activeProjectName
@@ -342,7 +478,11 @@ const currentProjectName = computed(() => {
 
   return projectGroups.value[0]?.projectName?.trim() ?? ''
 })
+const activeComposerCwd = computed(() => (isHomeRoute.value ? newThreadCwd.value : selectedThread.value?.cwd ?? '').trim())
+const composerWorkspaceModel = computed(() => getWorkspaceModelForCwd(activeComposerCwd.value))
+const composerPersistedServerRequests = computed(() => composerWorkspaceModel.value?.approvals.persisted ?? [])
 const contentTitle = computed(() => {
+  if (isAccountCenterView.value) return '账号中心'
   if (isHomeRoute.value) return t('app.newThread')
   return selectedThread.value?.title ?? t('app.chooseThread')
 })
@@ -390,8 +530,34 @@ const thinkingIndicatorDetail = computed(() => {
   }
   return ''
 })
+const selectedPrimaryApprovalRequest = computed(() => {
+  for (const request of selectedThreadServerRequests.value) {
+    if (!isApprovalRequestMethod(request.method)) continue
+    const fileChanges = selectedThreadFileChanges.value && selectedThreadFileChanges.value.turnId === request.turnId
+      ? selectedThreadFileChanges.value
+      : null
+    if (buildApprovalRequestDisplayModel(request, fileChanges)) {
+      return request
+    }
+  }
+  return null
+})
+const selectedPrimaryApprovalRequestId = computed(() => selectedPrimaryApprovalRequest.value?.id ?? null)
+const selectedLiveApprovalCount = computed(() =>
+  selectedThreadServerRequests.value.filter((request) => isApprovalRequestMethod(request.method)).length,
+)
+const selectedPersistedApprovalCount = computed(() =>
+  selectedThreadPersistedServerRequests.value.filter((request) => isApprovalRequestMethod(request.method)).length,
+)
+const hasSelectedThreadPendingServerRequests = computed(() => selectedThreadServerRequests.value.length > 0)
 const isThinkingIndicatorVisible = computed(() =>
-  !isHomeRoute.value && (isSelectedThreadInProgress.value || isSendingMessage.value || liveOverlay.value !== null),
+  shouldShowThinkingIndicator({
+    isHomeRoute: isHomeRoute.value,
+    isSelectedThreadInProgress: isSelectedThreadInProgress.value,
+    isSendingMessage: isSendingMessage.value,
+    hasLiveOverlay: liveOverlay.value !== null,
+    hasPendingServerRequests: hasSelectedThreadPendingServerRequests.value,
+  }),
 )
 const filteredMessages = computed(() =>
   messages.value.filter((message) => {
@@ -404,7 +570,7 @@ const filteredMessages = computed(() =>
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
 const canOpenWorkspaceDiff = computed(() => {
-  if (isHomeRoute.value) return false
+  if (isHomeRoute.value || isAccountCenterView.value) return false
   const cwd = selectedThread.value?.cwd?.trim() ?? ''
   return cwd.length > 0
 })
@@ -432,6 +598,7 @@ const newThreadFolderOptions = computed(() => {
 
 onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown)
+  window.addEventListener('focus', onWindowFocus)
   applyThemeMode(uiTheme.value)
   setupSystemThemeSync()
   void initialize()
@@ -439,7 +606,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeyDown)
+  window.removeEventListener('focus', onWindowFocus)
   cleanupSystemThemeSync()
+  clearAccountAlignmentRefreshTimer()
   stopPolling()
 })
 
@@ -493,6 +662,13 @@ function onStartNewThreadFromToolbar(): void {
   void router.push({ name: 'home' })
 }
 
+function onOpenAccountCenter(): void {
+  previewPanel.value = null
+  if (!isAccountCenterView.value) {
+    void router.push({ name: 'accountCenter' })
+  }
+}
+
 function onRenameThread(payload: { threadId: string; title: string }): void {
   void renameThreadById(payload.threadId, payload.title)
 }
@@ -515,6 +691,10 @@ function onUpdateThreadScrollState(payload: { threadId: string; state: ThreadScr
 
 function onRespondServerRequest(payload: { id: number; result?: unknown; error?: { code?: number; message: string } }): void {
   void respondToPendingServerRequest(payload)
+}
+
+function onDismissPersistedServerRequest(requestId: number): void {
+  void dismissPersistedServerRequests([requestId])
 }
 
 function onToggleAutoRefreshTimer(): void {
@@ -580,12 +760,106 @@ function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {
   setSelectedReasoningEffort(effort)
 }
 
+function onSwitchAccountProfile(profileId: string): void {
+  void switchAccountProfile(profileId)
+}
+
+function onRemoveAccountProfile(profileId: string): void {
+  const normalizedProfileId = profileId.trim()
+  if (!normalizedProfileId) return
+  void removeAccountProfile(normalizedProfileId)
+}
+
+function clearAccountAlignmentRefreshTimer(): void {
+  if (accountAlignmentRefreshTimer !== null) {
+    window.clearInterval(accountAlignmentRefreshTimer)
+    accountAlignmentRefreshTimer = null
+  }
+  accountAlignmentRefreshStartedAtMs = 0
+}
+
+function scheduleAccountAlignmentRefresh(): void {
+  clearAccountAlignmentRefreshTimer()
+  accountAlignmentRefreshStartedAtMs = Date.now()
+  void refreshAll()
+  accountAlignmentRefreshTimer = window.setInterval(() => {
+    if (Date.now() - accountAlignmentRefreshStartedAtMs >= ACCOUNT_ALIGNMENT_REFRESH_DURATION_MS) {
+      clearAccountAlignmentRefreshTimer()
+      return
+    }
+    void refreshAll()
+  }, ACCOUNT_ALIGNMENT_REFRESH_INTERVAL_MS)
+}
+
+function onWindowFocus(): void {
+  if (accountAlignmentRefreshTimer === null) return
+  void refreshAll()
+}
+
+function onAlignAccount(): void {
+  void (async () => {
+    const authUrl = await startAccountAlignment()
+    if (!authUrl) return
+    scheduleAccountAlignmentRefresh()
+    window.open(authUrl, '_blank', 'noopener,noreferrer')
+  })()
+}
+
 function onInterruptTurn(): void {
   void interruptSelectedThreadTurn()
 }
 
 function onCompactContext(): void {
   void compactSelectedThreadContext()
+}
+
+function onRefreshWorkspaceBranches(): void {
+  const cwd = activeComposerCwd.value
+  if (!cwd) return
+  void refreshWorkspaceBranchStateForCwd(cwd, { includeBranches: true, silent: false })
+  void refreshWorkspacePushStatusForCwd(cwd, { silent: false })
+}
+
+async function onSwitchWorkspaceBranch(branch: string): Promise<void> {
+  const cwd = activeComposerCwd.value
+  if (!cwd) return
+  const didSwitch = isHomeRoute.value
+    ? await switchWorkspaceBranchForCwd(cwd, branch)
+    : await switchSelectedWorkspaceBranch(branch)
+  if (!didSwitch) return
+  previewPanel.value = null
+  await refreshWorkspacePushStatusForCwd(cwd, { silent: true })
+  await refreshSelectedWorkspaceDiffTotals()
+}
+
+async function onCreateWorkspaceBranch(branch: string): Promise<void> {
+  const cwd = activeComposerCwd.value
+  if (!cwd) return
+  const didCreate = isHomeRoute.value
+    ? await createAndSwitchWorkspaceBranchForCwd(cwd, branch)
+    : await createAndSwitchSelectedWorkspaceBranch(branch)
+  if (!didCreate) return
+  previewPanel.value = null
+  await refreshWorkspacePushStatusForCwd(cwd, { silent: true })
+  await refreshSelectedWorkspaceDiffTotals()
+}
+
+async function onPushWorkspaceBranch(): Promise<void> {
+  const cwd = activeComposerCwd.value
+  if (!cwd) return
+  if (isHomeRoute.value) {
+    await pushWorkspaceBranchForCwd(cwd)
+    return
+  }
+  await pushSelectedWorkspaceBranch()
+}
+
+async function onUndoThreadFileChange(turnId: string): Promise<void> {
+  await undoLatestThreadFileChange(turnId)
+}
+
+async function onReapplyThreadFileChange(turnId: string): Promise<void> {
+  await reapplyLatestThreadFileChange(turnId)
 }
 
 function formatQueuedAtTime(value: string): string {
@@ -628,12 +902,14 @@ function findTurnFileChangeByPath(pathValue: string): UiTurnFileChanges['files']
 
 async function onOpenFileReference(payload: { path: string; line: number | null }): Promise<void> {
   const matchedDiff = findTurnFileChangeByPath(payload.path)
-  if (matchedDiff) {
+  if (matchedDiff?.diff.trim()) {
     onOpenFileDiff({
       path: matchedDiff.path,
       diff: matchedDiff.diff,
       additions: matchedDiff.additions,
       deletions: matchedDiff.deletions,
+      totalAdditions: matchedDiff.additions,
+      totalDeletions: matchedDiff.deletions,
     })
     return
   }
@@ -650,13 +926,22 @@ function onCloseFilePreview(): void {
   previewPanel.value = null
 }
 
-function onOpenFileDiff(payload: { path: string; diff: string; additions: number; deletions: number }): void {
+function onOpenFileDiff(payload: {
+  path: string
+  diff: string
+  additions: number
+  deletions: number
+  totalAdditions: number
+  totalDeletions: number
+}): void {
   previewPanel.value = {
     kind: 'diff',
     path: payload.path,
     diff: payload.diff || '',
     additions: payload.additions,
     deletions: payload.deletions,
+    totalAdditions: payload.totalAdditions,
+    totalDeletions: payload.totalDeletions,
   }
 }
 
@@ -668,49 +953,41 @@ async function onOpenWorkspaceDiff(): Promise<void> {
 
   const cwd = selectedThread.value?.cwd?.trim() ?? ''
   if (!cwd) return
-  try {
-    const changes = await fetchWorkspaceChanges(cwd)
-    const normalizedChanges: UiTurnFileChanges = changes ?? {
-      turnId: '__workspace__',
-      files: [],
-      totalAdditions: 0,
-      totalDeletions: 0,
-    }
-    const expandedPaths: Record<string, boolean> = {}
-    if (normalizedChanges.files.length > 0) {
-      expandedPaths[normalizedChanges.files[0].path] = true
-    }
-    previewPanel.value = {
-      kind: 'workspace',
-      cwd,
-      changes: normalizedChanges,
-      expandedPaths,
-    }
-  } catch {
-    previewPanel.value = null
+  const preferredMode = selectedWorkspaceModel.value?.diff.selectedMode ?? ''
+  if (preferredMode && preferredMode !== 'unstaged') {
+    await openWorkspaceDiffPanel(cwd, preferredMode)
+    return
+  }
+
+  const snapshot = await openPreferredWorkspaceDiffSnapshot(cwd)
+  if (!snapshot) return
+  previewPanel.value = {
+    kind: 'workspace',
+    cwd,
   }
 }
 
-
-
-async function refreshWorkspaceDiffTotals(): Promise<void> {
-  const cwd = selectedThread.value?.cwd?.trim() ?? ''
-  if (!cwd) {
-    workspaceDiffTotals.value = { additions: 0, deletions: 0 }
-    return
+async function openWorkspaceDiffPanel(cwd: string, mode: UiWorkspaceDiffMode): Promise<void> {
+  const snapshot = await fetchWorkspaceDiffSnapshotForMode(cwd, mode)
+  setWorkspaceDiffMode(cwd, snapshot.mode)
+  previewPanel.value = {
+    kind: 'workspace',
+    cwd,
   }
-  try {
-    const changes = await fetchWorkspaceChanges(cwd)
-    if (!changes) {
-      workspaceDiffTotals.value = { additions: 0, deletions: 0 }
-      return
-    }
-    workspaceDiffTotals.value = {
-      additions: changes.totalAdditions,
-      deletions: changes.totalDeletions,
-    }
-  } catch {
-    workspaceDiffTotals.value = { additions: 0, deletions: 0 }
+}
+
+async function onChangeWorkspaceDiffMode(mode: UiWorkspaceDiffMode): Promise<void> {
+  const cwd = selectedThread.value?.cwd?.trim() ?? ''
+  if (!cwd) return
+  await openWorkspaceDiffPanel(cwd, mode)
+}
+
+async function onUpdateWorkspaceBaseBranch(branch: string): Promise<void> {
+  const cwd = selectedThread.value?.cwd?.trim() ?? ''
+  if (!cwd) return
+  setWorkspaceBaseBranch(cwd, branch.trim() || null)
+  if (previewPanel.value?.kind === 'workspace') {
+    await openWorkspaceDiffPanel(cwd, 'branch')
   }
 }
 
@@ -754,7 +1031,9 @@ function resolveThemeMode(mode: ThemeMode): 'light' | 'dark' {
 
 function applyThemeMode(mode: ThemeMode): void {
   if (typeof document === 'undefined') return
-  document.documentElement.setAttribute('data-theme', resolveThemeMode(mode))
+  const resolvedMode = resolveThemeMode(mode)
+  document.documentElement.setAttribute('data-theme', resolvedMode)
+  document.documentElement.style.colorScheme = resolvedMode
 }
 
 let cleanupSystemThemeSync = () => {}
@@ -784,7 +1063,7 @@ async function initialize(): Promise<void> {
   await refreshAll()
   hasInitialized.value = true
   await syncThreadSelectionWithRoute()
-  await refreshWorkspaceDiffTotals()
+  await refreshSelectedWorkspaceDiffTotals()
   startPolling()
 }
 
@@ -839,10 +1118,10 @@ watch(
   async (threadId) => {
     if (!hasInitialized.value) return
     if (isRouteSyncInProgress.value) return
-    if (isHomeRoute.value) return
+    if (isHomeRoute.value || isAccountCenterView.value) return
 
     if (!threadId) {
-      if (route.name !== 'home') {
+      if (route.name !== 'home' && route.name !== 'accountCenter') {
         await router.replace({ name: 'home' })
       }
       return
@@ -857,7 +1136,7 @@ watch(
   () => selectedThreadId.value,
   () => {
     previewPanel.value = null
-    void refreshWorkspaceDiffTotals()
+    void refreshSelectedWorkspaceDiffTotals()
   },
 )
 
@@ -889,7 +1168,7 @@ watch(
 watch(
   () => selectedThreadFileChanges.value?.turnId ?? '',
   () => {
-    void refreshWorkspaceDiffTotals()
+    void refreshSelectedWorkspaceDiffTotals()
   },
 )
 
@@ -904,6 +1183,44 @@ watch(
     if (!hasSelected) {
       newThreadCwd.value = options[0].value
     }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [activeAccountProfileId.value, selectedThreadRateLimitUsage.value] as const,
+  ([profileId, usage]) => {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId || !usage) return
+    accountRateLimitUsageByProfileId.value = {
+      ...accountRateLimitUsageByProfileId.value,
+      [normalizedProfileId]: usage,
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => accountProfiles.value.map((profile) => profile.profileId).join('::'),
+  () => {
+    const activeProfileIds = new Set(accountProfiles.value.map((profile) => profile.profileId))
+    const nextMap: Record<string, UiRateLimitUsage | null> = {}
+    for (const [profileId, usage] of Object.entries(accountRateLimitUsageByProfileId.value)) {
+      if (!activeProfileIds.has(profileId)) continue
+      nextMap[profileId] = usage
+    }
+    accountRateLimitUsageByProfileId.value = nextMap
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [isHomeRoute.value, newThreadCwd.value] as const,
+  ([homeRoute, cwd]) => {
+    if (!homeRoute) return
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return
+    void refreshWorkspaceBranchStateForCwd(normalizedCwd, { includeBranches: false, silent: true })
   },
   { immediate: true },
 )
@@ -935,7 +1252,8 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 .content-root {
-  @apply h-full min-h-0 w-full flex flex-col overflow-y-hidden overflow-x-visible bg-white;
+  @apply h-full min-h-0 w-full flex flex-col overflow-y-hidden overflow-x-visible;
+  background: var(--color-bg-surface);
 }
 
 .sidebar-thread-controls-host {
@@ -943,11 +1261,20 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 .sidebar-search-toggle {
-  @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent text-zinc-600 flex items-center justify-center transition hover:border-zinc-200 hover:bg-zinc-50;
+  @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent flex items-center justify-center transition;
+  color: var(--color-text-secondary);
 }
 
 .sidebar-search-toggle[aria-pressed='true'] {
-  @apply border-zinc-300 bg-zinc-100 text-zinc-700;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-muted);
+  color: var(--color-text-primary);
+}
+
+.sidebar-search-toggle:hover {
+  border-color: var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
 }
 
 .sidebar-search-toggle-icon {
@@ -955,19 +1282,36 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 .sidebar-search-bar {
-  @apply flex items-center gap-1.5 mx-2 px-2 py-1 rounded-md border border-zinc-200 bg-white transition-colors focus-within:border-zinc-400;
+  @apply flex items-center gap-1.5 mx-2 px-2 py-1 rounded-md border transition-colors;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-surface);
+}
+
+.sidebar-search-bar:focus-within {
+  border-color: var(--color-border-strong);
 }
 
 .sidebar-search-bar-icon {
-  @apply w-3.5 h-3.5 text-zinc-400 shrink-0;
+  @apply w-3.5 h-3.5 shrink-0;
+  color: var(--color-text-muted);
 }
 
 .sidebar-search-input {
-  @apply flex-1 min-w-0 bg-transparent text-sm text-zinc-800 placeholder-zinc-400 outline-none border-none p-0;
+  @apply flex-1 min-w-0 bg-transparent text-sm outline-none border-none p-0;
+  color: var(--color-text-primary);
+}
+
+.sidebar-search-input::placeholder {
+  color: var(--color-text-muted);
 }
 
 .sidebar-search-clear {
-  @apply w-4 h-4 rounded text-zinc-400 flex items-center justify-center transition hover:text-zinc-600;
+  @apply w-4 h-4 rounded flex items-center justify-center transition;
+  color: var(--color-text-muted);
+}
+
+.sidebar-search-clear:hover {
+  color: var(--color-text-secondary);
 }
 
 .sidebar-search-clear-icon {
@@ -979,11 +1323,34 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 }
 
 .sidebar-footer-button {
-  @apply h-7 w-7 rounded-md border border-transparent bg-transparent text-zinc-600 flex items-center justify-center transition hover:bg-zinc-100 hover:text-zinc-800;
+  @apply h-7 w-7 rounded-md border border-transparent bg-transparent inline-flex items-center justify-center transition;
+  color: var(--color-text-secondary);
+}
+
+.sidebar-footer-button-account-center {
+  @apply w-auto px-2.5 gap-1.5;
+  border-color: color-mix(in srgb, #14b8a6 30%, var(--color-border-default));
+  background: color-mix(in srgb, #14b8a6 14%, var(--color-bg-subtle));
+  color: #14b8a6;
+}
+
+.sidebar-footer-button[aria-pressed='true'] {
+  border-color: color-mix(in srgb, #14b8a6 42%, var(--color-border-default));
+  background: color-mix(in srgb, #14b8a6 16%, var(--color-bg-subtle));
+  color: #14b8a6;
+}
+
+.sidebar-footer-button:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
 }
 
 .sidebar-footer-button-icon {
   @apply w-4 h-4;
+}
+
+.sidebar-footer-button-label {
+  @apply hidden text-[11px] font-semibold tracking-[0.04em];
 }
 
 .sidebar-footer-language-mark {
@@ -1014,6 +1381,68 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
   @apply flex-1 min-h-0 w-full flex flex-col gap-3 pt-1 pb-4 overflow-y-hidden overflow-x-visible;
 }
 
+.account-center-page {
+  @apply flex-1 min-h-0 overflow-y-auto px-2 py-2;
+  background:
+    radial-gradient(circle at 14% -8%, color-mix(in srgb, #0d9488 24%, transparent), transparent 48%),
+    radial-gradient(circle at 92% 4%, color-mix(in srgb, #1d4ed8 18%, transparent), transparent 42%),
+    var(--color-bg-surface);
+}
+
+.account-center-page-shell {
+  @apply mx-auto w-full max-w-6xl rounded-2xl border p-4 md:p-6;
+  border-color: color-mix(in srgb, #14b8a6 20%, var(--color-border-default));
+  background:
+    radial-gradient(circle at 94% -16%, rgba(20, 184, 166, 0.24), transparent 44%),
+    radial-gradient(circle at 6% -12%, rgba(56, 189, 248, 0.18), transparent 40%),
+    linear-gradient(146deg, var(--color-bg-surface), color-mix(in srgb, var(--color-bg-elevated) 72%, #1f2937 28%));
+  box-shadow:
+    0 26px 60px rgba(2, 6, 23, 0.34),
+    inset 0 1px 0 rgba(148, 163, 184, 0.16);
+  position: relative;
+  overflow: hidden;
+}
+
+.account-center-page-shell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-border-default) 16%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 100% 34px;
+  opacity: 0.2;
+}
+
+.account-center-page-header {
+  @apply mb-5 relative;
+  z-index: 1;
+}
+
+.account-center-page-eyebrow {
+  @apply m-0 text-[11px] tracking-[0.2em] uppercase;
+  color: var(--color-text-muted);
+}
+
+.account-center-page-title {
+  @apply m-0 mt-1.5 text-[1.7rem] leading-[1.12] font-semibold;
+  color: var(--color-text-primary);
+  text-wrap: balance;
+}
+
+.account-center-page-subtitle {
+  @apply m-0 mt-2.5 text-sm leading-6 max-w-2xl;
+  color: var(--color-text-secondary);
+}
+
+.account-center-switcher {
+  @apply w-full relative;
+  z-index: 1;
+}
+
 .content-error {
   @apply m-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700;
 }
@@ -1028,6 +1457,10 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 
 .content-composer-row {
   @apply min-h-0 flex flex-col gap-2;
+}
+
+.content-approval-overlay-host {
+  @apply w-full;
 }
 
 .content-queued-messages {
@@ -1144,6 +1577,73 @@ async function submitFirstMessageForNewThread(payload: ComposerSubmitPayload): P
 
 .new-thread-folder-dropdown :deep(.composer-dropdown-chevron) {
   @apply h-5 w-5 mt-0;
+}
+
+@media (max-width: 720px) {
+  .account-center-page {
+    @apply px-1.5 py-1.5;
+  }
+
+  .account-center-page-shell {
+    @apply rounded-xl px-3 py-3.5;
+  }
+
+  .account-center-page-header {
+    @apply mb-3.5;
+  }
+
+  .account-center-page-title {
+    @apply text-[1.35rem];
+  }
+
+  .account-center-page-subtitle {
+    @apply mt-2 text-[13px] leading-5;
+  }
+
+  .sidebar-footer-actions {
+    @apply sticky bottom-0 z-20 mt-2 gap-2 px-2 py-2;
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid color-mix(in srgb, #14b8a6 22%, var(--color-border-default));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--color-bg-app) 55%, transparent), var(--color-bg-app) 34%),
+      color-mix(in srgb, var(--color-bg-app) 92%, #00101a 8%);
+    backdrop-filter: blur(8px);
+  }
+
+  .sidebar-footer-button {
+    @apply h-8 w-8 rounded-lg;
+  }
+
+  .sidebar-footer-button-account-center {
+    @apply h-10 flex-1 justify-center rounded-xl px-3;
+    box-shadow: 0 8px 20px rgba(20, 184, 166, 0.22);
+  }
+
+  .sidebar-footer-button-label {
+    @apply inline;
+  }
+
+  .new-thread-empty {
+    @apply px-4;
+  }
+
+  .new-thread-folder-dropdown {
+    @apply max-w-full;
+  }
+
+  .new-thread-folder-dropdown :deep(.composer-dropdown) {
+    @apply max-w-full justify-center;
+  }
+
+  .new-thread-folder-dropdown :deep(.composer-dropdown-menu-wrap) {
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(20rem, calc(100vw - 1.5rem));
+  }
+
+  .new-thread-folder-dropdown :deep(.composer-dropdown-menu) {
+    width: 100%;
+  }
 }
 
 </style>

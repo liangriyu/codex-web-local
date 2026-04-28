@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-value {
-  @apply whitespace-nowrap text-left;
+  @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left;
 }
 
 .composer-dropdown-trigger-icon {

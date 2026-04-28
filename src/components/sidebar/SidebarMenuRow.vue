@@ -60,7 +60,8 @@ const hasRight = computed(() => hasRightDefault.value || hasRightHover.value)
 }
 
 .sidebar-menu-row-left {
-  @apply w-4 h-4 shrink-0 flex items-center justify-center text-zinc-500;
+  @apply w-4 h-4 shrink-0 flex items-center justify-center;
+  color: var(--color-text-muted);
 }
 
 .sidebar-menu-row-main {

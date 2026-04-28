@@ -1,8 +1,53 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtemp, readFile, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { tmpdir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import type { ThreadReadResponse } from '../api/appServerDtos.ts'
+import {
+  normalizeActiveTurnIdV2,
+  normalizeThreadFileChangeTimelineV2,
+  normalizeThreadInProgressV2,
+  normalizeThreadMessagesV2,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from '../api/normalizers/v2.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { buildSharedSessionSnapshot } from './sharedSessionProjector.ts'
+import {
+  listSharedSessionSnapshots,
+  readSharedSessionSnapshot,
+  writeSharedSessionSnapshot,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './sharedSessionStore.ts'
+import {
+  readThreadFileChangesFallbackFromSessionPath,
+  readThreadFileChangesTimelineFromSessionPath,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './threadFileChangesFallback.ts'
+import {
+  readAccountProfileSnapshot,
+  removeAccountProfile,
+  setActiveAccountProfile,
+  upsertAccountProfile,
+  type AccountManagedTokenPayload,
+  type AccountProfile,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './accountProfileStore.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { createAccountSwitchCoordinator, type AccountSwitchResult } from './accountSwitchCoordinator.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { createAccountTokenBroker } from './accountTokenBroker.ts'
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+import { mergeThreadFileChangeTimelines } from '../utils/threadFileChanges.ts'
+import {
+  MAX_AUDIO_BYTES,
+  createTranscriptionService,
+  TranscriptionServiceError,
+  type VoiceInputFallbackConfig,
+// @ts-ignore - tests import this TypeScript module directly via node:test.
+} from './transcriptionService.ts'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -40,12 +85,69 @@ type PendingServerRequest = {
   method: string
   params: unknown
   receivedAtIso: string
+  threadId: string
 }
+
+type PersistedServerRequest = {
+  id: number
+  method: string
+  threadId: string
+  turnId: string
+  itemId: string
+  cwd: string
+  params: unknown
+  receivedAtIso: string
+  resolvedAtIso: string | null
+  resolutionKind: string | null
+  dismissedAtIso: string | null
+  dismissedReason: string | null
+  dismissedBy: 'user' | null
+}
+
+const PERSISTED_SERVER_REQUEST_UNRESOLVED_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const PERSISTED_SERVER_REQUEST_RESOLVED_RETENTION_MS = 24 * 60 * 60 * 1000
+const SHARED_SESSION_NOTIFICATION_TRIGGER_METHODS = new Set([
+  'turn/started',
+  'turn/completed',
+  'turn/interrupted',
+])
+const SHARED_SESSION_RPC_TRIGGER_METHODS = new Set([
+  'turn/start',
+  'turn/interrupt',
+  'thread/resume',
+  'thread/start',
+])
+const PRIVATE_VOICE_INPUT_CAPABILITY_METHOD = 'web-local/voice-input/capability/read'
+const PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD = 'web-local/voice-input/transcription/create'
+const PRIVATE_ACCOUNT_PROFILES_LIST_METHOD = 'web-local/account/profiles/list'
+const PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD = 'web-local/account/profiles/switch'
+const PRIVATE_ACCOUNT_PROFILES_ADD_METHOD = 'web-local/account/profiles/add'
+const PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD = 'web-local/account/profiles/remove'
+const PRIVATE_ACCOUNT_ACTIVE_READ_METHOD = 'web-local/account/active/read'
+const ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH_METHOD = 'account/chatgptAuthTokens/refresh'
+const PRIVATE_RPC_METHODS = [
+  PRIVATE_VOICE_INPUT_CAPABILITY_METHOD,
+  PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_LIST_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_ADD_METHOD,
+  PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD,
+  PRIVATE_ACCOUNT_ACTIVE_READ_METHOD,
+]
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null
+}
+
+function readText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function readOptionalText(value: unknown): string | null {
+  const normalized = readText(value)
+  return normalized.length > 0 ? normalized : null
 }
 
 function getErrorMessage(payload: unknown, fallback: string): string {
@@ -67,10 +169,82 @@ function getErrorMessage(payload: unknown, fallback: string): string {
   return fallback
 }
 
+function areManagedTokenPayloadsEqual(
+  first: AccountManagedTokenPayload | null | undefined,
+  second: AccountManagedTokenPayload | null | undefined,
+): boolean {
+  if (!first && !second) return true
+  if (!first || !second) return false
+  return (
+    (first.idToken ?? null) === (second.idToken ?? null)
+    && first.accessToken === second.accessToken
+    && (first.refreshToken ?? null) === (second.refreshToken ?? null)
+    && first.accountId === second.accountId
+  )
+}
+
+type ThreadFileChangeActionErrorCode =
+  | 'no_reversible_turn'
+  | 'workspace_not_clean'
+  | 'patch_conflict'
+
+class ThreadFileChangeActionError extends Error {
+  readonly code: ThreadFileChangeActionErrorCode
+  readonly statusCode: number
+
+  constructor(code: ThreadFileChangeActionErrorCode, message: string, statusCode: number) {
+    super(message)
+    this.name = 'ThreadFileChangeActionError'
+    this.code = code
+    this.statusCode = statusCode
+  }
+}
+
+function isThreadFileChangeActionError(error: unknown): error is ThreadFileChangeActionError {
+  return error instanceof ThreadFileChangeActionError
+}
+
+function setThreadFileChangeActionError(
+  res: ServerResponse,
+  error: ThreadFileChangeActionError,
+): void {
+  setJson(res, error.statusCode, {
+    error: {
+      code: error.code,
+      message: error.message,
+    },
+  })
+}
+
 function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(payload))
+}
+
+class PrivateRpcError extends Error {
+  readonly code: number
+  readonly statusCode: number
+
+  constructor(code: number, message: string, statusCode: number) {
+    super(message)
+    this.name = 'PrivateRpcError'
+    this.code = code
+    this.statusCode = statusCode
+  }
+}
+
+function mapLoginStartErrorToPrivateRpcError(method: string, error: unknown): PrivateRpcError | null {
+  if (method !== 'account/login/start') return null
+  const message = getErrorMessage(error, '').toLowerCase()
+  if (!message.includes('failed to start login server')) {
+    return null
+  }
+  return new PrivateRpcError(
+    -32020,
+    '当前运行环境无法启动账号登录回调服务，请在具备本地回调端口权限的环境中重试。',
+    409,
+  )
 }
 
 function normalizePreviewPath(rawPath: string): string {
@@ -78,6 +252,125 @@ function normalizePreviewPath(rawPath: string): string {
   if (!trimmed) return ''
   if (isAbsolute(trimmed)) return resolve(trimmed)
   return resolve(process.cwd(), trimmed)
+}
+
+function getPersistedServerRequestsLedgerPath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim()
+  const baseDir = codexHome && codexHome.length > 0
+    ? codexHome
+    : join(homedir(), '.codex')
+  return join(baseDir, 'codex-web-local', 'persisted-server-requests.json')
+}
+
+function getCodexHomePath(): string {
+  const codexHome = process.env.CODEX_HOME?.trim()
+  return codexHome && codexHome.length > 0
+    ? resolve(codexHome)
+    : resolve(homedir(), '.codex')
+}
+
+function getCodexAuthJsonPath(): string {
+  return join(getCodexHomePath(), 'auth.json')
+}
+
+function parseTimestampMs(value: string | null): number | null {
+  if (!value) return null
+  const timestamp = new Date(value).getTime()
+  return Number.isNaN(timestamp) ? null : timestamp
+}
+
+function readPendingServerRequestThreadId(params: unknown): string {
+  const record = asRecord(params)
+  if (!record) return ''
+  return (
+    readText(record.threadId) ||
+    readText(record.thread_id) ||
+    readText(record.conversationId) ||
+    readText(record.conversation_id)
+  )
+}
+
+function readNotificationThreadId(params: unknown): string {
+  const record = asRecord(params)
+  if (!record) return ''
+
+  const directThreadId = readText(record.threadId)
+  if (directThreadId) return directThreadId
+
+  const snakeThreadId = readText(record.thread_id)
+  if (snakeThreadId) return snakeThreadId
+
+  const conversationId = readText(record.conversationId)
+  if (conversationId) return conversationId
+
+  const snakeConversationId = readText(record.conversation_id)
+  if (snakeConversationId) return snakeConversationId
+
+  const thread = asRecord(record.thread)
+  const nestedThreadId = readText(thread?.id)
+  if (nestedThreadId) return nestedThreadId
+
+  const turn = asRecord(record.turn)
+  const turnThreadId = readText(turn?.threadId)
+  if (turnThreadId) return turnThreadId
+
+  return readText(turn?.thread_id)
+}
+
+function readThreadIdFromRpcPayload(method: string, params: unknown, result: unknown): string {
+  if (!SHARED_SESSION_RPC_TRIGGER_METHODS.has(method)) return ''
+
+  const paramRecord = asRecord(params)
+  const directThreadId = readText(paramRecord?.threadId)
+  if (directThreadId) return directThreadId
+
+  if (method !== 'thread/start') return ''
+  const resultRecord = asRecord(result)
+  const thread = asRecord(resultRecord?.thread)
+  return readText(thread?.id)
+}
+
+function readRequestThreadId(request: { threadId?: string; params: unknown }): string {
+  return readText(request.threadId) || readPendingServerRequestThreadId(request.params)
+}
+
+function toProjectorPendingServerRequest(
+  request: PendingServerRequest,
+): {
+  id: number
+  method: string
+  threadId: string
+  turnId: string
+  itemId: string
+  receivedAtIso: string
+  params: unknown
+} {
+  const requestParams = asRecord(request.params)
+  return {
+    id: request.id,
+    method: request.method,
+    threadId: readRequestThreadId(request),
+    turnId: readText(requestParams?.turnId),
+    itemId: readText(requestParams?.itemId),
+    receivedAtIso: request.receivedAtIso,
+    params: request.params,
+  }
+}
+
+function readThreadTitle(thread: Record<string, unknown>): string {
+  const candidates = [
+    thread.name,
+    thread.preview,
+  ]
+
+  for (const candidate of candidates) {
+    const title = readText(candidate)
+    if (title.length > 0) {
+      return title
+    }
+  }
+
+  return 'Untitled thread'
 }
 
 function runGit(args: string[], cwd: string): Promise<string> {
@@ -93,11 +386,122 @@ function runGit(args: string[], cwd: string): Promise<string> {
   })
 }
 
+function runGitWithInput(args: string[], cwd: string, input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile('git', args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const message = stderr?.trim() || error.message
+        reject(new Error(message))
+        return
+      }
+      resolve(stdout)
+    })
+    child.stdin?.end(input)
+  })
+}
+
 type WorkspaceFileChange = {
   path: string
   additions: number
   deletions: number
   diff: string
+}
+
+type WorkspaceDiffMode =
+  | 'unstaged'
+  | 'staged'
+  | 'branch'
+  | 'lastCommit'
+  | 'gitStatus'
+
+type WorkspaceDiffSnapshot = {
+  mode: WorkspaceDiffMode
+  cwd: string
+  label: string
+  baseRef: string | null
+  targetRef: string | null
+  warning: string | null
+  files: WorkspaceFileChange[]
+  totalAdditions: number
+  totalDeletions: number
+}
+
+type ServerSideWorkspaceGuardBlockedReason =
+  | 'not_repo'
+  | 'workspace_dirty'
+  | 'pending_server_requests'
+  | 'persisted_server_requests'
+  | 'unresolved_server_request_scope'
+
+type ServerSideWorkspaceGuard = {
+  cwd: string
+  isRepo: boolean
+  blockedReasons: ServerSideWorkspaceGuardBlockedReason[]
+}
+
+type ResolvedRequestWorkspace = {
+  cwd: string
+  unresolvedScope: boolean
+}
+
+type WorkspaceDirtyKind =
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked'
+  | 'conflicted'
+  | 'unknown'
+
+type WorkspaceDirtyEntry = {
+  path: string
+  x: string
+  y: string
+  kind: WorkspaceDirtyKind
+  staged: boolean
+  unstaged: boolean
+}
+
+type WorkspaceDirtySummary = {
+  trackedModified: number
+  staged: number
+  untracked: number
+  conflicted: number
+  renamed: number
+  deleted: number
+}
+
+type WorkspaceGitStatus = {
+  cwd: string
+  isRepo: boolean
+  isDirty: boolean
+  currentBranch: string
+  dirtySummary: WorkspaceDirtySummary
+  dirtyEntries: WorkspaceDirtyEntry[]
+}
+
+type WorkspacePushMetadata = {
+  cwd: string
+  isRepo: boolean
+  currentBranch: string
+  hasUpstream: boolean
+  willSetUpstream: boolean
+  upstreamRemote: string
+  upstreamBranch: string
+  aheadCount: number
+  behindCount: number
+  hasCommitsToPush: boolean
+  canPush: boolean
+  suggestedUpstreamCommand: string
+}
+
+const EMPTY_WORKSPACE_DIRTY_SUMMARY: WorkspaceDirtySummary = {
+  trackedModified: 0,
+  staged: 0,
+  untracked: 0,
+  conflicted: 0,
+  renamed: 0,
+  deleted: 0,
 }
 
 function parseNumstat(output: string): Array<{ path: string; additions: number; deletions: number }> {
@@ -115,6 +519,121 @@ function parseNumstat(output: string): Array<{ path: string; additions: number; 
     })
   }
   return rows
+}
+
+function normalizeWorkspaceDiffMode(value: string): WorkspaceDiffMode | null {
+  const normalized = value.trim()
+  if (
+    normalized === 'unstaged' ||
+    normalized === 'staged' ||
+    normalized === 'branch' ||
+    normalized === 'lastCommit' ||
+    normalized === 'gitStatus'
+  ) {
+    return normalized
+  }
+  return null
+}
+
+function isConflictStatus(x: string, y: string): boolean {
+  if (x === 'U' || y === 'U') return true
+  const pair = `${x}${y}`
+  return pair === 'DD' || pair === 'AA'
+}
+
+function classifyWorkspaceDirtyKind(x: string, y: string, path: string): WorkspaceDirtyKind {
+  if (!path) return 'unknown'
+  if (x === '?' && y === '?') return 'untracked'
+  if (isConflictStatus(x, y)) return 'conflicted'
+  if (x === 'R' || y === 'R' || x === 'C' || y === 'C') return 'renamed'
+  if (x === 'D' || y === 'D') return 'deleted'
+  if (x === 'A' || y === 'A') return 'added'
+  if (
+    x === 'M' || y === 'M' ||
+    x === 'T' || y === 'T'
+  ) {
+    return 'modified'
+  }
+  return 'unknown'
+}
+
+function normalizeStatusPathSegment(rawPath: string): string {
+  const trimmed = rawPath.trim()
+  if (!trimmed) return ''
+  const renameSeparator = ' -> '
+  if (trimmed.includes(renameSeparator)) {
+    const [, nextPath = ''] = trimmed.split(renameSeparator)
+    return nextPath.trim()
+  }
+  return trimmed
+}
+
+function parseWorkspaceDirtyEntries(output: string): WorkspaceDirtyEntry[] {
+  const lines = output.split('\n').filter((line) => line.trim().length > 0)
+  const entries: WorkspaceDirtyEntry[] = []
+  for (const line of lines) {
+    if (line.length < 3) continue
+    const x = line[0] ?? ' '
+    const y = line[1] ?? ' '
+    const path = normalizeStatusPathSegment(line.slice(3))
+    if (!path) continue
+    entries.push({
+      path,
+      x,
+      y,
+      kind: classifyWorkspaceDirtyKind(x, y, path),
+      staged: x !== ' ' && x !== '?',
+      unstaged: y !== ' ' && y !== '?',
+    })
+  }
+  return entries.sort((first, second) => first.path.localeCompare(second.path))
+}
+
+function summarizeWorkspaceDirtyEntries(entries: WorkspaceDirtyEntry[]): WorkspaceDirtySummary {
+  const summary: WorkspaceDirtySummary = { ...EMPTY_WORKSPACE_DIRTY_SUMMARY }
+  for (const entry of entries) {
+    if (entry.staged) {
+      summary.staged += 1
+    }
+    if (entry.kind === 'untracked') {
+      summary.untracked += 1
+      continue
+    }
+    if (entry.kind === 'conflicted') {
+      summary.conflicted += 1
+      continue
+    }
+    if (entry.kind === 'renamed') {
+      summary.renamed += 1
+      continue
+    }
+    if (entry.kind === 'deleted') {
+      summary.deleted += 1
+      continue
+    }
+    summary.trackedModified += 1
+  }
+  return summary
+}
+
+async function readWorkspaceSubmodulePaths(cwd: string): Promise<Set<string>> {
+  try {
+    const output = await runGit(['submodule', 'status', '--recursive'], cwd)
+    const paths = new Set<string>()
+    for (const rawLine of output.split('\n')) {
+      const line = rawLine.trim()
+      if (!line) continue
+      const match = line.match(/^[+\-U ]?[0-9a-f]{40}\s+(.+?)(?:\s+\(.*\))?$/iu)
+      if (!match) continue
+      const path = match[1]?.trim()
+      if (path) {
+        paths.add(normalizeStatusPathSegment(path))
+      }
+    }
+    return paths
+  } catch {
+    return new Set<string>()
+  }
 }
 
 async function collectWorkspaceChanges(cwd: string): Promise<WorkspaceFileChange[]> {
@@ -153,6 +672,320 @@ async function collectWorkspaceChanges(cwd: string): Promise<WorkspaceFileChange
   return Array.from(merged.values()).sort((first, second) => first.path.localeCompare(second.path))
 }
 
+async function collectWorkspaceChangesForDiffArgs(
+  cwd: string,
+  numstatArgs: string[],
+  diffArgsForPath: (path: string) => string[],
+): Promise<WorkspaceFileChange[]> {
+  const targetCwd = resolve(cwd)
+  await runGit(['rev-parse', '--is-inside-work-tree'], targetCwd)
+
+  const numstatOutput = await runGit(numstatArgs, targetCwd)
+  const rows = parseNumstat(numstatOutput)
+  const files: WorkspaceFileChange[] = new Array(rows.length)
+
+  // Limit the number of concurrent git diff processes to avoid overwhelming the system
+  const maxConcurrentDiffs = 4
+  let currentIndex = 0
+
+  async function worker(): Promise<void> {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const index = currentIndex++
+      if (index >= rows.length) {
+        break
+      }
+      const row = rows[index]
+      const diff = await runGit(diffArgsForPath(row.path), targetCwd).catch(() => '')
+      files[index] = {
+        path: row.path,
+        additions: row.additions,
+        deletions: row.deletions,
+        diff: diff.trimEnd(),
+      }
+    }
+  }
+
+  const workerCount = Math.min(maxConcurrentDiffs, rows.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return files.sort((first, second) => first.path.localeCompare(second.path))
+}
+
+async function refExists(cwd: string, ref: string): Promise<boolean> {
+  try {
+    await runGit(['rev-parse', '--verify', `${ref}^{commit}`], cwd)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resolveUpstreamRemote(cwd: string): Promise<string | null> {
+  try {
+    const upstream = (await runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], cwd)).trim()
+    if (!upstream) return null
+    const [remote] = upstream.split('/')
+    return remote?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+async function resolveRemoteHeadBranch(
+  cwd: string,
+  remote: string,
+): Promise<{ remote: string; ref: string; shortName: string } | null> {
+  const normalizedRemote = remote.trim()
+  if (!normalizedRemote) return null
+  try {
+    const symbolicRef = (
+      await runGit(['symbolic-ref', '--quiet', '--short', `refs/remotes/${normalizedRemote}/HEAD`], cwd)
+    ).trim()
+    if (!symbolicRef || symbolicRef === `${normalizedRemote}/HEAD`) return null
+    const shortName = symbolicRef.startsWith(`${normalizedRemote}/`)
+      ? symbolicRef.slice(normalizedRemote.length + 1)
+      : symbolicRef
+    return {
+      remote: normalizedRemote,
+      ref: symbolicRef,
+      shortName,
+    }
+  } catch {
+    return null
+  }
+}
+
+async function listRemoteHeadBranches(
+  cwd: string,
+): Promise<Array<{ remote: string; ref: string; shortName: string }>> {
+  try {
+    const output = await runGit(['for-each-ref', 'refs/remotes', '--format=%(refname:short)'], cwd)
+    const remotes = new Set<string>()
+    for (const line of output.split('\n')) {
+      const normalized = line.trim()
+      if (!normalized.endsWith('/HEAD')) continue
+      const remote = normalized.slice(0, -'/HEAD'.length).trim()
+      if (remote) remotes.add(remote)
+    }
+
+    const resolved = await Promise.all(
+      Array.from(remotes)
+        .sort((first, second) => first.localeCompare(second))
+        .map((remote) => resolveRemoteHeadBranch(cwd, remote)),
+    )
+
+    const deduped = new Map<string, { remote: string; ref: string; shortName: string }>()
+    for (const candidate of resolved) {
+      if (!candidate) continue
+      if (!deduped.has(candidate.ref)) {
+        deduped.set(candidate.ref, candidate)
+      }
+    }
+    return Array.from(deduped.values())
+  } catch {
+    return []
+  }
+}
+
+function withConfiguredBaseBranchWarning(
+  configuredBaseBranch: string,
+  resolvedBaseBranch: string,
+  note: string | null = null,
+): string {
+  const prefix = `Configured base branch ${configuredBaseBranch} not found`
+  if (note) return `${prefix}; ${note}`
+  return `${prefix}; using ${resolvedBaseBranch}`
+}
+
+async function resolveWorkspaceDiffBaseBranch(
+  cwd: string,
+  preferredBaseBranch: string | null,
+): Promise<{ baseBranch: string | null; warning: string | null }> {
+  const targetCwd = resolve(cwd)
+  const normalizedPreferred = preferredBaseBranch?.trim() ?? ''
+  if (normalizedPreferred) {
+    if (await refExists(targetCwd, normalizedPreferred)) {
+      return { baseBranch: normalizedPreferred, warning: null }
+    }
+  }
+
+  const upstreamRemote = await resolveUpstreamRemote(targetCwd)
+  if (upstreamRemote) {
+    const upstreamRemoteHead = await resolveRemoteHeadBranch(targetCwd, upstreamRemote)
+    if (upstreamRemoteHead) {
+      return {
+        baseBranch: upstreamRemoteHead.ref,
+        warning: normalizedPreferred
+          ? withConfiguredBaseBranchWarning(normalizedPreferred, upstreamRemoteHead.ref)
+          : null,
+      }
+    }
+  }
+
+  const originRemoteHead = await resolveRemoteHeadBranch(targetCwd, 'origin')
+  if (originRemoteHead) {
+    return {
+      baseBranch: originRemoteHead.ref,
+      warning: normalizedPreferred
+        ? withConfiguredBaseBranchWarning(normalizedPreferred, originRemoteHead.ref)
+        : null,
+    }
+  }
+
+  const remoteHeads = await listRemoteHeadBranches(targetCwd)
+  if (remoteHeads.length > 0) {
+    const chosenRemoteHead = remoteHeads[0]
+    const fallbackWarning = remoteHeads.length > 1
+      ? `Multiple local remote HEADs found; using ${chosenRemoteHead.ref}`
+      : `Using local remote HEAD ${chosenRemoteHead.ref}`
+    return {
+      baseBranch: chosenRemoteHead.ref,
+      warning: normalizedPreferred
+        ? withConfiguredBaseBranchWarning(normalizedPreferred, chosenRemoteHead.ref, fallbackWarning)
+        : fallbackWarning,
+    }
+  }
+
+  for (const candidate of ['main', 'master', 'develop', 'dev', 'trunk']) {
+    if (await refExists(targetCwd, candidate)) {
+      return {
+        baseBranch: candidate,
+        warning: normalizedPreferred
+          ? withConfiguredBaseBranchWarning(normalizedPreferred, candidate, `using local branch ${candidate}`)
+          : `Remote HEAD not found; using local branch ${candidate}`,
+      }
+    }
+  }
+
+  return {
+    baseBranch: null,
+    warning: normalizedPreferred
+      ? `Configured base branch ${normalizedPreferred} not found; unable to infer a base branch from local Git metadata`
+      : 'Unable to infer a base branch from local Git metadata',
+  }
+}
+
+function summarizeWorkspaceFileChanges(files: WorkspaceFileChange[]): Pick<WorkspaceDiffSnapshot, 'totalAdditions' | 'totalDeletions'> {
+  return {
+    totalAdditions: files.reduce((sum, file) => sum + file.additions, 0),
+    totalDeletions: files.reduce((sum, file) => sum + file.deletions, 0),
+  }
+}
+
+async function collectWorkspaceDiffSnapshot(
+  cwd: string,
+  mode: WorkspaceDiffMode,
+  options: { baseBranch?: string | null } = {},
+): Promise<WorkspaceDiffSnapshot> {
+  const targetCwd = resolve(cwd)
+  await runGit(['rev-parse', '--is-inside-work-tree'], targetCwd)
+
+  if (mode === 'unstaged') {
+    const files = await collectWorkspaceChangesForDiffArgs(
+      targetCwd,
+      ['diff', '--numstat'],
+      (path) => ['diff', '--', path],
+    )
+    const totals = summarizeWorkspaceFileChanges(files)
+    return {
+      mode,
+      cwd: targetCwd,
+      label: 'Unstaged changes',
+      baseRef: null,
+      targetRef: 'WORKTREE',
+      warning: null,
+      files,
+      ...totals,
+    }
+  }
+
+  if (mode === 'staged') {
+    const files = await collectWorkspaceChangesForDiffArgs(
+      targetCwd,
+      ['diff', '--cached', '--numstat'],
+      (path) => ['diff', '--cached', '--', path],
+    )
+    const totals = summarizeWorkspaceFileChanges(files)
+    return {
+      mode,
+      cwd: targetCwd,
+      label: 'Staged changes',
+      baseRef: 'HEAD',
+      targetRef: 'INDEX',
+      warning: null,
+      files,
+      ...totals,
+    }
+  }
+
+  if (mode === 'lastCommit') {
+    const files = await collectWorkspaceChangesForDiffArgs(
+      targetCwd,
+      ['show', '--format=', '--numstat', 'HEAD'],
+      (path) => ['show', '--format=', 'HEAD', '--', path],
+    )
+    const totals = summarizeWorkspaceFileChanges(files)
+    return {
+      mode,
+      cwd: targetCwd,
+      label: 'Last commit',
+      baseRef: 'HEAD~1',
+      targetRef: 'HEAD',
+      warning: null,
+      files,
+      ...totals,
+    }
+  }
+
+  if (mode === 'gitStatus') {
+    const status = await readWorkspaceGitStatus(targetCwd)
+    return {
+      mode,
+      cwd: targetCwd,
+      label: 'Git status',
+      baseRef: null,
+      targetRef: status.currentBranch || 'WORKTREE',
+      warning: null,
+      files: [],
+      totalAdditions: 0,
+      totalDeletions: 0,
+    }
+  }
+
+  const { baseBranch, warning } = await resolveWorkspaceDiffBaseBranch(targetCwd, options.baseBranch ?? null)
+  if (!baseBranch) {
+    return {
+      mode,
+      cwd: targetCwd,
+      label: 'Branch changes',
+      baseRef: null,
+      targetRef: 'HEAD',
+      warning,
+      files: [],
+      totalAdditions: 0,
+      totalDeletions: 0,
+    }
+  }
+
+  const mergeBase = (await runGit(['merge-base', baseBranch, 'HEAD'], targetCwd)).trim()
+  const files = await collectWorkspaceChangesForDiffArgs(
+    targetCwd,
+    ['diff', '--numstat', mergeBase, 'HEAD'],
+    (path) => ['diff', mergeBase, 'HEAD', '--', path],
+  )
+  const totals = summarizeWorkspaceFileChanges(files)
+  return {
+    mode,
+    cwd: targetCwd,
+    label: `Branch changes vs ${baseBranch}`,
+    baseRef: baseBranch,
+    targetRef: 'HEAD',
+    warning,
+    files,
+    ...totals,
+  }
+}
+
 async function collectWorkspaceUnifiedDiff(cwd: string): Promise<string> {
   const targetCwd = resolve(cwd)
   await runGit(['rev-parse', '--is-inside-work-tree'], targetCwd)
@@ -161,6 +994,292 @@ async function collectWorkspaceUnifiedDiff(cwd: string): Promise<string> {
     runGit(['diff'], targetCwd).catch(() => ''),
   ])
   return [stagedDiff.trimEnd(), unstagedDiff.trimEnd()].filter((part) => part.length > 0).join('\n')
+}
+
+async function isGitWorkspace(cwd: string): Promise<boolean> {
+  try {
+    const output = await runGit(['rev-parse', '--is-inside-work-tree'], resolve(cwd))
+    return output.trim() === 'true'
+  } catch {
+    return false
+  }
+}
+
+async function readWorkspaceGitStatus(cwd: string): Promise<WorkspaceGitStatus> {
+  const targetCwd = resolve(cwd)
+  const isRepo = await isGitWorkspace(targetCwd)
+  if (!isRepo) {
+    return {
+      cwd: targetCwd,
+      isRepo: false,
+      isDirty: false,
+      currentBranch: '',
+      dirtySummary: { ...EMPTY_WORKSPACE_DIRTY_SUMMARY },
+      dirtyEntries: [],
+    }
+  }
+
+  const [statusOutput, branchOutput, submodulePaths] = await Promise.all([
+    runGit(['status', '--porcelain=v1', '-uall', '--ignore-submodules=dirty'], targetCwd),
+    runGit(['branch', '--show-current'], targetCwd).catch(() => ''),
+    readWorkspaceSubmodulePaths(targetCwd),
+  ])
+  const dirtyEntries = parseWorkspaceDirtyEntries(statusOutput)
+    .filter((entry) => !submodulePaths.has(entry.path))
+
+  return {
+    cwd: targetCwd,
+    isRepo: true,
+    isDirty: dirtyEntries.length > 0,
+    currentBranch: branchOutput.trim(),
+    dirtySummary: summarizeWorkspaceDirtyEntries(dirtyEntries),
+    dirtyEntries,
+  }
+}
+
+async function readWorkspaceBranches(cwd: string): Promise<{
+  cwd: string
+  isRepo: boolean
+  currentBranch: string
+  branches: string[]
+}> {
+  const targetCwd = resolve(cwd)
+  const status = await readWorkspaceGitStatus(targetCwd)
+  if (!status.isRepo) {
+    return {
+      cwd: targetCwd,
+      isRepo: false,
+      currentBranch: '',
+      branches: [],
+    }
+  }
+
+  const output = await runGit(['branch', '--list', '--format=%(refname:short)'], targetCwd)
+  const branches = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .sort((first, second) => first.localeCompare(second))
+
+  return {
+    cwd: targetCwd,
+    isRepo: true,
+    currentBranch: status.currentBranch,
+    branches,
+  }
+}
+
+async function assertGitWorkspace(cwd: string): Promise<string> {
+  const targetCwd = resolve(cwd)
+  if (!(await isGitWorkspace(targetCwd))) {
+    throw new Error('Target cwd is not a git repository')
+  }
+  return targetCwd
+}
+
+async function assertValidBranchName(branch: string): Promise<string> {
+  const normalizedBranch = branch.trim()
+  if (!normalizedBranch) {
+    throw new Error('Branch name is required')
+  }
+
+  try {
+    await runGit(['check-ref-format', '--branch', normalizedBranch], process.cwd())
+  } catch {
+    throw new Error('Invalid branch name')
+  }
+
+  return normalizedBranch
+}
+
+async function switchWorkspaceBranch(cwd: string, branch: string): Promise<void> {
+  const targetCwd = await assertGitWorkspace(cwd)
+  const normalizedBranch = await assertValidBranchName(branch)
+  await runGit(['switch', normalizedBranch], targetCwd)
+}
+
+async function createAndSwitchWorkspaceBranch(cwd: string, branch: string): Promise<void> {
+  const targetCwd = await assertGitWorkspace(cwd)
+  const normalizedBranch = await assertValidBranchName(branch)
+  await runGit(['switch', '-c', normalizedBranch], targetCwd)
+}
+
+async function readGitRemoteNames(cwd: string): Promise<string[]> {
+  try {
+    const output = await runGit(['remote'], cwd)
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+  } catch {
+    return []
+  }
+}
+
+function parseUpstreamRef(upstreamRef: string): { upstreamRemote: string; upstreamBranch: string } {
+  const normalized = upstreamRef.trim()
+  if (!normalized) {
+    return { upstreamRemote: '', upstreamBranch: '' }
+  }
+
+  const separatorIndex = normalized.indexOf('/')
+  if (separatorIndex === -1) {
+    return { upstreamRemote: '', upstreamBranch: normalized }
+  }
+
+  return {
+    upstreamRemote: normalized.slice(0, separatorIndex).trim(),
+    upstreamBranch: normalized.slice(separatorIndex + 1).trim(),
+  }
+}
+
+async function resolveSuggestedUpstreamRemote(cwd: string): Promise<string> {
+  const remoteNames = await readGitRemoteNames(cwd)
+  if (remoteNames.includes('origin')) {
+    return 'origin'
+  }
+  return remoteNames[0] ?? 'origin'
+}
+
+function isMissingUpstreamError(error: unknown): boolean {
+  const message = getErrorMessage(error, '').toLowerCase()
+  return message.includes('no upstream configured')
+    || message.includes('has no upstream branch')
+    || message.includes('no upstream branch')
+}
+
+async function resolveWorkspacePushMetadata(cwd: string): Promise<WorkspacePushMetadata> {
+  const targetCwd = resolve(cwd)
+  const isRepo = await isGitWorkspace(targetCwd)
+  if (!isRepo) {
+    return {
+      cwd: targetCwd,
+      isRepo: false,
+      currentBranch: '',
+      hasUpstream: false,
+      willSetUpstream: false,
+      upstreamRemote: '',
+      upstreamBranch: '',
+      aheadCount: 0,
+      behindCount: 0,
+      hasCommitsToPush: false,
+      canPush: false,
+      suggestedUpstreamCommand: '',
+    }
+  }
+
+  const currentBranch = (await runGit(['branch', '--show-current'], targetCwd).catch(() => '')).trim()
+  if (!currentBranch) {
+    return {
+      cwd: targetCwd,
+      isRepo: true,
+      currentBranch: '',
+      hasUpstream: false,
+      willSetUpstream: false,
+      upstreamRemote: '',
+      upstreamBranch: '',
+      aheadCount: 0,
+      behindCount: 0,
+      hasCommitsToPush: false,
+      canPush: false,
+      suggestedUpstreamCommand: '',
+    }
+  }
+
+  let upstreamRef = ''
+  try {
+    upstreamRef = (await runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], targetCwd)).trim()
+  } catch (error) {
+    if (!isMissingUpstreamError(error)) {
+      throw error
+    }
+  }
+  if (!upstreamRef) {
+    const suggestedRemote = await resolveSuggestedUpstreamRemote(targetCwd)
+    return {
+      cwd: targetCwd,
+      isRepo: true,
+      currentBranch,
+      hasUpstream: false,
+      willSetUpstream: true,
+      upstreamRemote: suggestedRemote,
+      upstreamBranch: currentBranch,
+      aheadCount: 0,
+      behindCount: 0,
+      hasCommitsToPush: true,
+      canPush: true,
+      suggestedUpstreamCommand: `git push --set-upstream ${suggestedRemote} ${currentBranch}`,
+    }
+  }
+
+  const [aheadBehindOutput, remotes] = await Promise.all([
+    runGit(['rev-list', '--left-right', '--count', `HEAD...${upstreamRef}`], targetCwd),
+    readGitRemoteNames(targetCwd),
+  ])
+  const [aheadRaw = '0', behindRaw = '0'] = aheadBehindOutput.trim().split(/\s+/)
+  const aheadCount = Number.isFinite(Number.parseInt(aheadRaw, 10)) ? Math.max(0, Math.trunc(Number.parseInt(aheadRaw, 10))) : 0
+  const behindCount = Number.isFinite(Number.parseInt(behindRaw, 10)) ? Math.max(0, Math.trunc(Number.parseInt(behindRaw, 10))) : 0
+  const { upstreamRemote, upstreamBranch } = parseUpstreamRef(upstreamRef)
+  const fallbackRemote = remotes.includes('origin') ? 'origin' : (remotes[0] ?? 'origin')
+
+  return {
+    cwd: targetCwd,
+    isRepo: true,
+    currentBranch,
+    hasUpstream: true,
+    willSetUpstream: false,
+    upstreamRemote: upstreamRemote || fallbackRemote,
+    upstreamBranch: upstreamBranch || currentBranch,
+    aheadCount,
+    behindCount,
+    hasCommitsToPush: aheadCount > 0,
+    canPush: aheadCount > 0,
+    suggestedUpstreamCommand: '',
+  }
+}
+
+async function pushWorkspaceBranch(cwd: string): Promise<{
+  currentBranch: string
+  upstreamRemote: string
+  upstreamBranch: string
+  createdUpstream: boolean
+  summary: string
+}> {
+  const targetCwd = await assertGitWorkspace(cwd)
+  const metadata = await resolveWorkspacePushMetadata(targetCwd)
+  if (!metadata.currentBranch) {
+    throw new Error('Current HEAD is detached; cannot push')
+  }
+  if (metadata.hasUpstream) {
+    await runGit(['push'], targetCwd)
+    return {
+      currentBranch: metadata.currentBranch,
+      upstreamRemote: metadata.upstreamRemote,
+      upstreamBranch: metadata.upstreamBranch,
+      createdUpstream: false,
+      summary: `Pushed ${metadata.currentBranch} to ${metadata.upstreamRemote}/${metadata.upstreamBranch}`,
+    }
+  }
+
+  const targetRemote = metadata.upstreamRemote || await resolveSuggestedUpstreamRemote(targetCwd)
+  await runGit(['push', '--set-upstream', targetRemote, metadata.currentBranch], targetCwd)
+  return {
+    currentBranch: metadata.currentBranch,
+    upstreamRemote: targetRemote,
+    upstreamBranch: metadata.currentBranch,
+    createdUpstream: true,
+    summary: `Pushed ${metadata.currentBranch} to ${targetRemote}/${metadata.currentBranch} and set upstream`,
+  }
+}
+
+async function readWorkspacePushStatus(cwd: string): Promise<WorkspacePushMetadata & { blockedReasons: string[] }> {
+  const metadata = await resolveWorkspacePushMetadata(cwd)
+  const guard = await getSharedBridgeState().appServer.getWorkspaceGuard(cwd)
+  return {
+    ...metadata,
+    blockedReasons: guard.blockedReasons,
+    canPush: metadata.canPush && guard.blockedReasons.length === 0,
+  }
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -187,6 +1306,619 @@ class AppServerProcess {
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
+  private readonly persistedServerRequests = new Map<number, PersistedServerRequest>()
+  private readonly threadCwdById = new Map<string, string>()
+  private readonly threadPathById = new Map<string, string>()
+  private readonly latestThreadFileChangeStateByThreadId = new Map<string, 'applied' | 'reverted'>()
+  private readonly persistedServerRequestsLedgerPath = getPersistedServerRequestsLedgerPath()
+  private persistedServerRequestsLoaded: Promise<void> | null = null
+  private persistedServerRequestsFlushChain: Promise<void> = Promise.resolve()
+  private voiceInputFallbackConfig: VoiceInputFallbackConfig = {
+    provider: 'openai',
+    enabled: false,
+    model: 'gpt-4o-mini-transcribe',
+  }
+  private readonly accountTokenBroker = createAccountTokenBroker({
+    refresh: async (profile) => {
+      if (profile.tokenPayload) return profile.tokenPayload
+      throw new Error(`No token payload available for profile ${profile.profileId}`)
+    },
+  })
+  private readonly accountSwitchCoordinator = createAccountSwitchCoordinator({
+    readSnapshot: async () => {
+      const snapshot = await readAccountProfileSnapshot()
+      return {
+        activeProfileId: snapshot.activeProfileId,
+        profiles: snapshot.profiles.map((profile) => ({
+          profileId: profile.profileId,
+          accountId: profile.accountId,
+          tokenPayload: profile.tokenPayload,
+        })),
+      }
+    },
+    setActiveProfile: async (profileId) => setActiveAccountProfile(profileId),
+    getUsableAccessToken: async (profile) => this.accountTokenBroker.getUsableAccessToken(profile),
+    loginWithAuthTokens: async (payload) => {
+      await this.ensureInitialized()
+      await this.call('account/login/start', {
+        type: 'chatgptAuthTokens',
+        accessToken: payload.accessToken,
+        chatgptAccountId: payload.chatgptAccountId,
+        chatgptPlanType: payload.chatgptPlanType,
+      })
+    },
+    onSwitched: async (result) => {
+      await this.reconcileAccountProfileStatusesAfterSwitch(result)
+      await this.syncCodexAuthFileWithActiveProfile(result.activeProfileId).catch(() => {})
+    },
+  })
+
+  setVoiceInputFallbackConfig(config: VoiceInputFallbackConfig): void {
+    this.voiceInputFallbackConfig = config
+  }
+
+  private getTranscriptionService() {
+    return createTranscriptionService(this.voiceInputFallbackConfig)
+  }
+
+  private async handleVoiceInputPrivateRpc(method: string, params: unknown): Promise<unknown> {
+    const transcriptionService = this.getTranscriptionService()
+
+    if (method === PRIVATE_VOICE_INPUT_CAPABILITY_METHOD) {
+      return transcriptionService.getCapability()
+    }
+
+    if (method !== PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD) {
+      throw new PrivateRpcError(-32602, 'Invalid private RPC method', 400)
+    }
+
+    const body = asRecord(params)
+    if (!body) {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    const audioBase64 = readText(body.audioBase64)
+    const contentType = readText(body.contentType)
+    const language = readText(body.language) || undefined
+
+    if (!audioBase64 || !contentType) {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    let audio: Buffer
+    try {
+      audio = Buffer.from(audioBase64, 'base64')
+    } catch {
+      throw new PrivateRpcError(-32602, 'Invalid params', 400)
+    }
+
+    if (audio.length === 0) {
+      throw new PrivateRpcError(-32013, 'Audio payload is empty', 400)
+    }
+    if (audio.length > MAX_AUDIO_BYTES) {
+      throw new PrivateRpcError(-32012, 'Audio payload too large', 413)
+    }
+    if (!transcriptionService.getCapability().acceptedMimeTypes.some((value) => value === contentType)) {
+      throw new PrivateRpcError(-32011, 'Unsupported audio content type', 415)
+    }
+
+    try {
+      const text = await transcriptionService.transcribeAudio({
+        audio,
+        contentType,
+        language,
+      })
+      return {
+        text,
+        provider: transcriptionService.getCapability().provider,
+        model: transcriptionService.getCapability().model,
+      }
+    } catch (error) {
+      if (error instanceof TranscriptionServiceError) {
+        const activeProvider = this.voiceInputFallbackConfig.provider === 'zhipu' ? 'zhipu' : 'openai'
+        if (error.status === 503) {
+          throw new PrivateRpcError(-32010, error.message, 503)
+        }
+        if (error.status === 415) {
+          throw new PrivateRpcError(-32011, error.message, 415)
+        }
+        if (error.status === 413) {
+          throw new PrivateRpcError(-32012, error.message, 413)
+        }
+        if (error.status === 400) {
+          throw new PrivateRpcError(-32013, error.message, 400)
+        }
+        const normalizedMessage = error.message.toLowerCase()
+        if (
+          normalizedMessage.includes('insufficient_quota')
+          || normalizedMessage.includes('quota exceeded')
+          || normalizedMessage.includes('余额不足')
+          || normalizedMessage.includes('quota')
+          || normalizedMessage.includes('balance')
+          || (activeProvider === 'zhipu' && normalizedMessage.includes('资源包'))
+        ) {
+          throw new PrivateRpcError(-32017, 'Voice transcription quota exceeded', 402)
+        }
+        if (error.status === 429) {
+          throw new PrivateRpcError(-32015, 'Transcription upstream rate limited', 429)
+        }
+        if (normalizedMessage.includes('did not include text')) {
+          throw new PrivateRpcError(-32016, 'Transcription upstream returned no text', 502)
+        }
+        throw new PrivateRpcError(-32014, 'Transcription upstream request failed', 502)
+      }
+      throw error
+    }
+  }
+
+  private toPublicAccountProfile(profile: AccountProfile): {
+    profileId: string
+    accountId: string
+    provider: string
+    email: string | null
+    planType: string | null
+    status: string
+    lastUsedAtIso: string | null
+    tokenState: 'available' | 'missing'
+    chatgptAccountId: string | null
+    chatgptPlanType: string | null
+    tokenExpiresAtIso: string | null
+  } {
+    return {
+      profileId: profile.profileId,
+      accountId: profile.accountId,
+      provider: profile.provider,
+      email: profile.email,
+      planType: profile.planType,
+      status: profile.status,
+      lastUsedAtIso: profile.lastUsedAtIso,
+      tokenState: profile.tokenPayload ? 'available' : 'missing',
+      chatgptAccountId: profile.tokenPayload?.chatgptAccountId ?? null,
+      chatgptPlanType: profile.tokenPayload?.chatgptPlanType ?? null,
+      tokenExpiresAtIso: profile.tokenPayload?.expiresAtIso ?? null,
+    }
+  }
+
+  private async readCurrentAccountFallbackProfile(): Promise<ReturnType<AppServerProcess['toPublicAccountProfile']> | null> {
+    try {
+      await this.ensureInitialized()
+      const payload = await this.call('account/read', {})
+      const body = asRecord(payload)
+      const account = asRecord(body?.account)
+      if (!account) return null
+
+      const email = readOptionalText(account.email)
+      const accountId = email || readOptionalText(account.id)
+      if (!accountId) return null
+
+      return {
+        profileId: `current:${accountId}`,
+        accountId,
+        provider: 'chatgptAuthTokens',
+        email,
+        planType: readOptionalText(account.planType),
+        status: 'active',
+        lastUsedAtIso: null,
+        tokenState: 'missing',
+        chatgptAccountId: null,
+        chatgptPlanType: null,
+        tokenExpiresAtIso: null,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  private async readCurrentRuntimeAuthTokens(): Promise<{
+    accessToken: string
+    chatgptAccountId: string
+    managedTokenPayload: AccountManagedTokenPayload | null
+  } | null> {
+    try {
+      const raw = await readFile(getCodexAuthJsonPath(), 'utf8')
+      const body = asRecord(JSON.parse(raw))
+      const authMode = readText(body?.auth_mode)
+      const tokens = asRecord(body?.tokens)
+      const accessToken = readText(tokens?.access_token)
+      const chatgptAccountId = readText(tokens?.account_id)
+      if (!accessToken || !chatgptAccountId) return null
+      const idToken = readOptionalText(tokens?.id_token)
+      const refreshToken = readOptionalText(tokens?.refresh_token)
+      const hasManagedHints = authMode === 'chatgpt' || idToken !== null || refreshToken !== null
+      return {
+        accessToken,
+        chatgptAccountId,
+        managedTokenPayload: hasManagedHints
+          ? {
+              idToken,
+              accessToken,
+              refreshToken,
+              accountId: chatgptAccountId,
+            }
+          : null,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  private async syncCurrentRuntimeAccountProfile(): Promise<void> {
+    await this.ensureInitialized()
+    const payload = await this.call('account/read', {})
+    const body = asRecord(payload)
+    const account = asRecord(body?.account)
+    if (!account) return
+
+    const email = readOptionalText(account.email)
+    const accountId = email || readOptionalText(account.id)
+    if (!accountId) return
+
+    const authTokens = await this.readCurrentRuntimeAuthTokens()
+    if (!authTokens) return
+
+    const planType = readOptionalText(account.planType)
+    const snapshot = await readAccountProfileSnapshot()
+    const existingByIdentity = snapshot.profiles.find((profile) => (
+      profile.accountId === accountId
+      || (email !== null && profile.email === email)
+    ))
+    const profileId = existingByIdentity?.profileId ?? accountId
+    const existing = existingByIdentity
+      ?? snapshot.profiles.find((profile) => profile.profileId === profileId)
+    const existingTokenPayload = existing?.tokenPayload ?? null
+    const nextManagedTokenPayload = authTokens.managedTokenPayload
+      ?? (existing?.managedTokenPayload && existing.managedTokenPayload.accountId === authTokens.chatgptAccountId
+        ? existing.managedTokenPayload
+        : null)
+    const shouldTrustRuntimeAuthTokens =
+      !existingTokenPayload
+      || existingTokenPayload.chatgptAccountId === authTokens.chatgptAccountId
+    const nextTokenPayload = shouldTrustRuntimeAuthTokens
+      ? {
+        accessToken: authTokens.accessToken,
+        chatgptAccountId: authTokens.chatgptAccountId,
+        chatgptPlanType: planType,
+        expiresAtIso: null,
+      }
+      : {
+        accessToken: existingTokenPayload.accessToken,
+        chatgptAccountId: existingTokenPayload.chatgptAccountId,
+        chatgptPlanType: planType ?? existingTokenPayload.chatgptPlanType ?? null,
+        expiresAtIso: existingTokenPayload.expiresAtIso ?? null,
+      }
+    const shouldUpsert =
+      !existing
+      || existing.accountId !== accountId
+      || existing.email !== email
+      || existing.planType !== planType
+      || existing.status !== 'active'
+      || !existing.tokenPayload
+      || existing.tokenPayload.accessToken !== nextTokenPayload.accessToken
+      || existing.tokenPayload.chatgptAccountId !== nextTokenPayload.chatgptAccountId
+      || (existing.tokenPayload.chatgptPlanType ?? null) !== (nextTokenPayload.chatgptPlanType ?? null)
+      || !areManagedTokenPayloadsEqual(existing.managedTokenPayload, nextManagedTokenPayload)
+
+    if (shouldUpsert) {
+      await upsertAccountProfile({
+        profileId,
+        accountId,
+        provider: 'chatgptAuthTokens',
+        email,
+        planType,
+        tokenPayload: nextTokenPayload,
+        managedTokenPayload: nextManagedTokenPayload,
+        status: 'active',
+        lastUsedAtIso: new Date().toISOString(),
+      })
+    }
+    const duplicateProfiles = snapshot.profiles.filter((profile) => {
+      if (profile.profileId === profileId) return false
+      return (
+        profile.accountId === accountId
+        || (email !== null && profile.email === email)
+      )
+    })
+    if (duplicateProfiles.length > 0) {
+      await Promise.all(duplicateProfiles.map((profile) => removeAccountProfile(profile.profileId)))
+    }
+    if (snapshot.activeProfileId !== profileId) {
+      await setActiveAccountProfile(profileId)
+    }
+    await this.reconcileAccountProfileStatusesAfterSwitch({
+      activeProfileId: profileId,
+      previousProfileId: snapshot.activeProfileId,
+    }).catch(() => {})
+  }
+
+  private async reconcileAccountProfileStatusesAfterSwitch(
+    result: Pick<AccountSwitchResult, 'activeProfileId' | 'previousProfileId'>,
+  ): Promise<void> {
+    const snapshot = await readAccountProfileSnapshot()
+    const nowIso = new Date().toISOString()
+    const updates: Promise<void>[] = []
+    for (const profile of snapshot.profiles) {
+      let nextStatus = profile.status
+      let nextLastUsedAtIso = profile.lastUsedAtIso
+
+      if (profile.profileId === result.activeProfileId) {
+        nextStatus = 'active'
+        nextLastUsedAtIso = nowIso
+      } else if (profile.status === 'active') {
+        nextStatus = 'inactive'
+      }
+
+      if (nextStatus !== profile.status || nextLastUsedAtIso !== profile.lastUsedAtIso) {
+        updates.push(upsertAccountProfile({
+          ...profile,
+          status: nextStatus,
+          lastUsedAtIso: nextLastUsedAtIso,
+        }))
+      }
+    }
+
+    if (updates.length > 0) {
+      await Promise.all(updates)
+    }
+  }
+
+  private async syncCodexAuthFileWithActiveProfile(activeProfileId: string): Promise<void> {
+    const normalizedActiveProfileId = readText(activeProfileId)
+    if (!normalizedActiveProfileId) return
+
+    const snapshot = await readAccountProfileSnapshot()
+    const activeProfile = snapshot.profiles.find((profile) => profile.profileId === normalizedActiveProfileId)
+    const tokenPayload = activeProfile?.tokenPayload
+    if (!tokenPayload) return
+    const managedTokenPayload = activeProfile?.managedTokenPayload ?? null
+
+    const authPath = getCodexAuthJsonPath()
+    let authPayload: Record<string, unknown> = {}
+    try {
+      const raw = await readFile(authPath, 'utf8')
+      const parsed = asRecord(JSON.parse(raw))
+      if (parsed) {
+        authPayload = parsed
+      }
+    } catch {
+      authPayload = {}
+    }
+
+    if (managedTokenPayload && managedTokenPayload.accessToken && managedTokenPayload.accountId) {
+      const managedTokens: Record<string, unknown> = {
+        access_token: managedTokenPayload.accessToken,
+        account_id: managedTokenPayload.accountId,
+      }
+      if (managedTokenPayload.idToken) {
+        managedTokens.id_token = managedTokenPayload.idToken
+      }
+      if (managedTokenPayload.refreshToken) {
+        managedTokens.refresh_token = managedTokenPayload.refreshToken
+      }
+
+      const nextManagedAuthPayload: Record<string, unknown> = {
+        ...authPayload,
+        auth_mode: 'chatgpt',
+        tokens: managedTokens,
+        last_refresh: new Date().toISOString(),
+      }
+
+      await mkdir(dirname(authPath), { recursive: true })
+      await writeFile(authPath, JSON.stringify(nextManagedAuthPayload, null, 2), 'utf8')
+      return
+    }
+
+    const existingTokens = asRecord(authPayload.tokens)
+    const previousAccountId = readText(existingTokens?.account_id)
+    const shouldPreserveManagedTokens =
+      previousAccountId.length > 0
+      && previousAccountId === tokenPayload.chatgptAccountId
+
+    const nextTokens: Record<string, unknown> = {
+      access_token: tokenPayload.accessToken,
+      account_id: tokenPayload.chatgptAccountId,
+    }
+    if (shouldPreserveManagedTokens) {
+      const idToken = readText(existingTokens?.id_token)
+      const refreshToken = readText(existingTokens?.refresh_token)
+      if (idToken) {
+        nextTokens.id_token = idToken
+      }
+      if (refreshToken) {
+        nextTokens.refresh_token = refreshToken
+      }
+    }
+
+    const nextAuthPayload: Record<string, unknown> = {
+      ...authPayload,
+      auth_mode: 'chatgptAuthTokens',
+      tokens: nextTokens,
+      last_refresh: new Date().toISOString(),
+    }
+
+    await mkdir(dirname(authPath), { recursive: true })
+    await writeFile(authPath, JSON.stringify(nextAuthPayload, null, 2), 'utf8')
+  }
+
+  private async readAccountProfilesPrivateRpcPayload(): Promise<{
+    activeProfileId: string | null
+    profiles: ReturnType<AppServerProcess['toPublicAccountProfile']>[]
+  }> {
+    await this.syncCurrentRuntimeAccountProfile().catch(() => {})
+    const snapshot = await readAccountProfileSnapshot()
+    const profiles = snapshot.profiles.map((profile) => this.toPublicAccountProfile(profile))
+    if (profiles.length === 0) {
+      const fallbackProfile = await this.readCurrentAccountFallbackProfile()
+      if (fallbackProfile) {
+        return {
+          activeProfileId: fallbackProfile.profileId,
+          profiles: [fallbackProfile],
+        }
+      }
+    }
+    return {
+      activeProfileId: snapshot.activeProfileId,
+      profiles,
+    }
+  }
+
+  private async handleAccountPrivateRpc(method: string, params: unknown): Promise<unknown> {
+    if (method === PRIVATE_ACCOUNT_PROFILES_LIST_METHOD) {
+      return this.readAccountProfilesPrivateRpcPayload()
+    }
+
+    if (method === PRIVATE_ACCOUNT_ACTIVE_READ_METHOD) {
+      const snapshot = await readAccountProfileSnapshot()
+      const activeProfile = snapshot.activeProfileId
+        ? snapshot.profiles.find((profile) => profile.profileId === snapshot.activeProfileId) ?? null
+        : null
+      return {
+        activeProfileId: snapshot.activeProfileId,
+        activeProfile: activeProfile ? this.toPublicAccountProfile(activeProfile) : null,
+      }
+    }
+
+    if (method === PRIVATE_ACCOUNT_PROFILES_ADD_METHOD) {
+      const body = asRecord(params)
+      if (!body) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+      const profileId = readText(body.profileId) || readText(body.accountId)
+      const accountId = readText(body.accountId) || readText(body.chatgptAccountId)
+      const accessToken = readText(body.accessToken)
+      const chatgptAccountId = readText(body.chatgptAccountId) || accountId
+      const chatgptPlanType = readOptionalText(body.chatgptPlanType)
+      const managedIdToken = readOptionalText(body.idToken)
+      const managedRefreshToken = readOptionalText(body.refreshToken)
+      const managedAuthMode = readOptionalText(body.authMode)
+      if (!profileId || !accountId || !accessToken || !chatgptAccountId) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+
+      const status = readText(body.status)
+      await upsertAccountProfile({
+        profileId,
+        accountId,
+        provider: 'chatgptAuthTokens',
+        email: readOptionalText(body.email),
+        planType: readOptionalText(body.planType) ?? chatgptPlanType,
+        tokenPayload: {
+          accessToken,
+          chatgptAccountId,
+          chatgptPlanType,
+          expiresAtIso: readOptionalText(body.expiresAtIso),
+        },
+        managedTokenPayload: (managedAuthMode === 'chatgpt' || managedIdToken !== null || managedRefreshToken !== null)
+          ? {
+              idToken: managedIdToken,
+              accessToken,
+              refreshToken: managedRefreshToken,
+              accountId: chatgptAccountId,
+            }
+          : null,
+        status: status === 'active' || status === 'expired' || status === 'revoked'
+          ? status
+          : 'inactive',
+        lastUsedAtIso: new Date().toISOString(),
+      })
+      if (body.setActive === true) {
+        await setActiveAccountProfile(profileId)
+        await this.reconcileAccountProfileStatusesAfterSwitch({
+          activeProfileId: profileId,
+          previousProfileId: null,
+        }).catch(() => {})
+        await this.syncCodexAuthFileWithActiveProfile(profileId).catch(() => {})
+      }
+      return this.readAccountProfilesPrivateRpcPayload()
+    }
+
+    if (method === PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD) {
+      const body = asRecord(params)
+      const profileId = readText(body?.profileId)
+      if (!profileId) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+      let result: AccountSwitchResult
+      try {
+        result = await this.accountSwitchCoordinator.switchTo(profileId)
+      } catch (error) {
+        const message = getErrorMessage(error, 'Failed to switch account profile')
+        if (message.includes('requires experimentalApi capability')) {
+          throw new PrivateRpcError(
+            -32018,
+            '当前 Codex app-server 不支持免授权切换，请先点击“对齐账号”完成登录。',
+            409,
+          )
+        }
+        if (message.includes('No token payload available')) {
+          throw new PrivateRpcError(
+            -32019,
+            '目标账号缺少可用授权，请先“邮箱登录新增档案”或“对齐账号”。',
+            409,
+          )
+        }
+        throw error
+      }
+      const payload = await this.readAccountProfilesPrivateRpcPayload()
+      return {
+        ...payload,
+        switched: {
+          activeProfileId: result.activeProfileId,
+          previousProfileId: result.previousProfileId,
+        },
+      }
+    }
+
+    if (method === PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD) {
+      const body = asRecord(params)
+      const profileId = readText(body?.profileId)
+      if (!profileId) {
+        throw new PrivateRpcError(-32602, 'Invalid params', 400)
+      }
+      const snapshot = await readAccountProfileSnapshot()
+      const targetProfile = snapshot.profiles.find((profile) => profile.profileId === profileId) ?? null
+      const activeProfile = snapshot.activeProfileId
+        ? snapshot.profiles.find((profile) => profile.profileId === snapshot.activeProfileId) ?? null
+        : null
+      const isCurrentActiveAccount = targetProfile !== null && activeProfile !== null && (
+        targetProfile.profileId === activeProfile.profileId
+        || targetProfile.accountId === activeProfile.accountId
+        || (
+          targetProfile.email !== null
+          && activeProfile.email !== null
+          && targetProfile.email === activeProfile.email
+        )
+        || (
+          targetProfile.tokenPayload?.chatgptAccountId !== undefined
+          && activeProfile.tokenPayload?.chatgptAccountId !== undefined
+          && targetProfile.tokenPayload.chatgptAccountId === activeProfile.tokenPayload.chatgptAccountId
+        )
+      )
+      if (snapshot.activeProfileId === profileId || isCurrentActiveAccount) {
+        throw new PrivateRpcError(-32602, 'Active account profile cannot be removed', 400)
+      }
+      await removeAccountProfile(profileId)
+      return this.readAccountProfilesPrivateRpcPayload()
+    }
+
+    throw new PrivateRpcError(-32602, 'Invalid private RPC method', 400)
+  }
+
+  private async handlePrivateRpc(method: string, params: unknown): Promise<unknown> {
+    if (method === PRIVATE_VOICE_INPUT_CAPABILITY_METHOD || method === PRIVATE_VOICE_INPUT_TRANSCRIPTION_METHOD) {
+      return this.handleVoiceInputPrivateRpc(method, params)
+    }
+    if (
+      method === PRIVATE_ACCOUNT_PROFILES_LIST_METHOD
+      || method === PRIVATE_ACCOUNT_PROFILES_SWITCH_METHOD
+      || method === PRIVATE_ACCOUNT_PROFILES_ADD_METHOD
+      || method === PRIVATE_ACCOUNT_PROFILES_REMOVE_METHOD
+      || method === PRIVATE_ACCOUNT_ACTIVE_READ_METHOD
+    ) {
+      return this.handleAccountPrivateRpc(method, params)
+    }
+
+    return PRIVATE_RPC_NOT_HANDLED
+  }
 
   private start(): void {
     if (this.process) return
@@ -262,6 +1994,9 @@ class AppServerProcess {
     }
 
     if (typeof message.method === 'string' && typeof message.id !== 'number') {
+      if (SHARED_SESSION_NOTIFICATION_TRIGGER_METHODS.has(message.method)) {
+        this.triggerSharedSessionSnapshotSync(readNotificationThreadId(message.params ?? null))
+      }
       this.emitNotification({
         method: message.method,
         params: message.params ?? null,
@@ -298,19 +2033,487 @@ class AppServerProcess {
     })
   }
 
+  private async ensurePersistedServerRequestsLoaded(): Promise<void> {
+    if (this.persistedServerRequestsLoaded) {
+      await this.persistedServerRequestsLoaded
+      return
+    }
+
+    this.persistedServerRequestsLoaded = (async () => {
+      try {
+        const raw = await readFile(this.persistedServerRequestsLedgerPath, 'utf8')
+        const payload = JSON.parse(raw) as { requests?: unknown[] } | null
+        const rows = Array.isArray(payload?.requests) ? payload.requests : []
+        this.persistedServerRequests.clear()
+        for (const row of rows) {
+          const record = asRecord(row)
+          const id = record?.id
+          const method = typeof record?.method === 'string' ? record.method : ''
+          const receivedAtIso = typeof record?.receivedAtIso === 'string' ? record.receivedAtIso : ''
+          if (typeof id !== 'number' || !Number.isInteger(id) || !method || !receivedAtIso) continue
+          this.persistedServerRequests.set(id, {
+            id,
+            method,
+            threadId: typeof record?.threadId === 'string' ? record.threadId : '',
+            turnId: typeof record?.turnId === 'string' ? record.turnId : '',
+            itemId: typeof record?.itemId === 'string' ? record.itemId : '',
+            cwd: typeof record?.cwd === 'string' ? record.cwd : '',
+            params: record?.params ?? null,
+            receivedAtIso,
+            resolvedAtIso: typeof record?.resolvedAtIso === 'string' ? record.resolvedAtIso : null,
+            resolutionKind: typeof record?.resolutionKind === 'string' ? record.resolutionKind : null,
+            dismissedAtIso: typeof record?.dismissedAtIso === 'string' ? record.dismissedAtIso : null,
+            dismissedReason: typeof record?.dismissedReason === 'string' ? record.dismissedReason : null,
+            dismissedBy: record?.dismissedBy === 'user' ? 'user' : null,
+          })
+        }
+        if (this.prunePersistedServerRequests()) {
+          this.queuePersistedServerRequestsFlush()
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : ''
+        if (!message.includes('enoent')) {
+          console.warn('[codex-web-local] Failed to load persisted server requests:', error)
+        }
+      }
+    })()
+
+    await this.persistedServerRequestsLoaded
+  }
+
+  private prunePersistedServerRequests(nowMs = Date.now()): boolean {
+    let changed = false
+    for (const [requestId, request] of this.persistedServerRequests.entries()) {
+      const resolvedAtMs = parseTimestampMs(request.resolvedAtIso)
+      if (resolvedAtMs !== null) {
+        if (nowMs - resolvedAtMs > PERSISTED_SERVER_REQUEST_RESOLVED_RETENTION_MS) {
+          this.persistedServerRequests.delete(requestId)
+          changed = true
+        }
+        continue
+      }
+      const receivedAtMs = parseTimestampMs(request.receivedAtIso)
+      if (receivedAtMs !== null && nowMs - receivedAtMs > PERSISTED_SERVER_REQUEST_UNRESOLVED_TTL_MS) {
+        this.persistedServerRequests.delete(requestId)
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  private queuePersistedServerRequestsFlush(): void {
+    this.persistedServerRequestsFlushChain = this.persistedServerRequestsFlushChain
+      .catch(() => {})
+      .then(async () => {
+        this.prunePersistedServerRequests()
+        const ledgerPath = this.persistedServerRequestsLedgerPath
+        await mkdir(dirname(ledgerPath), { recursive: true })
+        const payload = {
+          version: 1,
+          requests: Array.from(this.persistedServerRequests.values()).sort((first, second) =>
+            first.receivedAtIso.localeCompare(second.receivedAtIso),
+          ),
+        }
+        await writeFile(ledgerPath, JSON.stringify(payload, null, 2), 'utf8')
+      })
+      .catch((error) => {
+        console.warn('[codex-web-local] Failed to persist server requests:', error)
+      })
+  }
+
+  private async upsertPersistedServerRequest(record: PersistedServerRequest): Promise<void> {
+    await this.ensurePersistedServerRequestsLoaded()
+    const current = this.persistedServerRequests.get(record.id)
+    this.persistedServerRequests.set(record.id, current
+      ? {
+          ...record,
+          resolvedAtIso: current.resolvedAtIso,
+          resolutionKind: current.resolutionKind,
+          dismissedAtIso: current.dismissedAtIso,
+          dismissedReason: current.dismissedReason,
+          dismissedBy: current.dismissedBy,
+        }
+      : record)
+    this.queuePersistedServerRequestsFlush()
+  }
+
+  private async markPersistedServerRequestResolved(requestId: number, resolutionKind: string): Promise<void> {
+    await this.ensurePersistedServerRequestsLoaded()
+    const current = this.persistedServerRequests.get(requestId)
+    if (!current) return
+    this.persistedServerRequests.set(requestId, {
+      ...current,
+      resolvedAtIso: new Date().toISOString(),
+      resolutionKind,
+    })
+    this.queuePersistedServerRequestsFlush()
+  }
+
+  private async resolveThreadCwd(threadId: string): Promise<string | null> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return null
+
+    const cached = this.threadCwdById.get(normalizedThreadId)
+    if (cached) return cached
+
+    try {
+      const payload = asRecord(await this.rpc('thread/read', {
+        threadId: normalizedThreadId,
+        includeTurns: false,
+      }))
+      const thread = asRecord(payload?.thread)
+      const cwd = typeof thread?.cwd === 'string' ? thread.cwd.trim() : ''
+      if (!cwd) return null
+      const normalizedCwd = resolve(cwd)
+      this.threadCwdById.set(normalizedThreadId, normalizedCwd)
+      return normalizedCwd
+    } catch {
+      return null
+    }
+  }
+
+  private async resolveThreadSessionPath(threadId: string): Promise<string | null> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return null
+
+    const cached = this.threadPathById.get(normalizedThreadId)
+    if (cached) return cached
+
+    try {
+      const payload = asRecord(await this.rpc('thread/read', {
+        threadId: normalizedThreadId,
+        includeTurns: false,
+      }))
+      const thread = asRecord(payload?.thread)
+      const sessionPath = typeof thread?.path === 'string' ? thread.path.trim() : ''
+      if (!sessionPath) return null
+      this.threadPathById.set(normalizedThreadId, sessionPath)
+      return sessionPath
+    } catch {
+      return null
+    }
+  }
+
+  async readThreadFileChangesFallback(threadId: string): Promise<unknown | null> {
+    const sessionPath = await this.resolveThreadSessionPath(threadId)
+    if (!sessionPath) return null
+
+    try {
+      return await readThreadFileChangesFallbackFromSessionPath(sessionPath)
+    } catch {
+      return null
+    }
+  }
+
+  async readThreadFileChangesTimeline(threadId: string): Promise<unknown | null> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return null
+
+    let threadReadTimeline: ReturnType<typeof normalizeThreadFileChangeTimelineV2> | null = null
+    try {
+      const payload = await this.rpc('thread/read', {
+        threadId: normalizedThreadId,
+        includeTurns: true,
+      }) as ThreadReadResponse
+      threadReadTimeline = normalizeThreadFileChangeTimelineV2(payload)
+    } catch {
+      threadReadTimeline = null
+    }
+
+    const sessionPath = await this.resolveThreadSessionPath(normalizedThreadId)
+    let fallbackTimeline = null as Awaited<ReturnType<typeof readThreadFileChangesTimelineFromSessionPath>> | null
+    if (sessionPath) {
+      try {
+        fallbackTimeline = await readThreadFileChangesTimelineFromSessionPath(sessionPath)
+      } catch {
+        fallbackTimeline = null
+      }
+    }
+
+    const mergedTimeline = threadReadTimeline
+      ? mergeThreadFileChangeTimelines(threadReadTimeline, {
+        threadId: normalizedThreadId,
+        records: fallbackTimeline ?? [],
+        latestReversibleTurnId: null,
+      })
+      : (fallbackTimeline
+        ? {
+          threadId: normalizedThreadId,
+          records: fallbackTimeline,
+          latestReversibleTurnId: null,
+        }
+        : null)
+
+    if (!mergedTimeline || mergedTimeline.records.length === 0) return null
+
+    let latestReversible = null as typeof mergedTimeline.records[number] | null
+    for (let index = mergedTimeline.records.length - 1; index >= 0; index -= 1) {
+      const candidate = mergedTimeline.records[index]
+      if (candidate.files.some((file) => file.diff.trim().length > 0)) {
+        latestReversible = candidate
+        break
+      }
+    }
+
+    return {
+      ...mergedTimeline,
+      latestReversibleTurnId: latestReversible?.turnId ?? null,
+      records: mergedTimeline.records.map((record) => ({
+        ...record,
+        canUndo: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) !== 'reverted',
+        canReapply: latestReversible?.turnId === record.turnId && this.latestThreadFileChangeStateByThreadId.get(normalizedThreadId) === 'reverted',
+      })),
+    }
+  }
+
+  async readLatestReversibleThreadFileChange(threadId: string): Promise<unknown | null> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return null
+    const timeline = await this.readThreadFileChangesTimeline(normalizedThreadId)
+    const timelineRecord = asRecord(timeline)
+    const records = Array.isArray(timelineRecord?.records) ? timelineRecord.records : []
+    const latestTurnId = readText(timelineRecord?.latestReversibleTurnId)
+    if (!latestTurnId) return null
+    const latest = records.find((record) => readText(asRecord(record)?.turnId) === latestTurnId)
+    return latest ?? null
+  }
+
+  async applyLatestReversibleThreadFileChange(threadId: string, mode: 'undo' | 'reapply'): Promise<{
+    threadId: string
+    turnId: string
+    state: 'applied' | 'reverted'
+  }> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) {
+      throw new Error('Missing threadId')
+    }
+    const cwd = await this.resolveThreadCwd(normalizedThreadId)
+    if (!cwd) {
+      throw new Error('Failed to resolve thread workspace')
+    }
+    const guard = await this.getWorkspaceGuard(cwd)
+    if (guard.blockedReasons.length > 0) {
+      throw new ThreadFileChangeActionError(
+        'workspace_not_clean',
+        `Workspace is blocked: ${guard.blockedReasons.join(', ')}`,
+        409,
+      )
+    }
+    const latest = await this.readLatestReversibleThreadFileChange(normalizedThreadId)
+    const latestRecord = asRecord(latest)
+    const turnId = readText(latestRecord?.turnId)
+    const files = Array.isArray(latestRecord?.files) ? latestRecord.files : []
+    const patchText = files
+      .map((file) => readText(asRecord(file)?.diff))
+      .filter((value) => value.length > 0)
+      .join('\n')
+      .trim()
+    if (!turnId || !patchText) {
+      throw new ThreadFileChangeActionError(
+        'no_reversible_turn',
+        'No reversible file change for thread',
+        404,
+      )
+    }
+
+    try {
+      if (mode === 'undo') {
+        await runGitWithInput(['apply', '-R', '-'], cwd, `${patchText}\n`)
+        this.latestThreadFileChangeStateByThreadId.set(normalizedThreadId, 'reverted')
+        return { threadId: normalizedThreadId, turnId, state: 'reverted' }
+      }
+
+      await runGitWithInput(['apply', '-'], cwd, `${patchText}\n`)
+      this.latestThreadFileChangeStateByThreadId.set(normalizedThreadId, 'applied')
+      return { threadId: normalizedThreadId, turnId, state: 'applied' }
+    } catch (error) {
+      throw new ThreadFileChangeActionError(
+        'patch_conflict',
+        getErrorMessage(error, 'Failed to apply thread file change patch'),
+        409,
+      )
+    }
+  }
+
+  private async resolveRequestWorkspace(params: unknown, fallbackThreadId = ''): Promise<ResolvedRequestWorkspace> {
+    const requestParams = asRecord(params)
+    const requestCwd = typeof requestParams?.cwd === 'string' ? requestParams.cwd.trim() : ''
+    if (requestCwd) {
+      return {
+        cwd: resolve(requestCwd),
+        unresolvedScope: false,
+      }
+    }
+
+    const threadId =
+      typeof requestParams?.threadId === 'string' && requestParams.threadId.trim().length > 0
+        ? requestParams.threadId
+        : fallbackThreadId
+    if (!threadId.trim()) {
+      return {
+        cwd: '',
+        unresolvedScope: false,
+      }
+    }
+
+    const resolvedCwd = await this.resolveThreadCwd(threadId)
+    return {
+      cwd: resolvedCwd ?? '',
+      unresolvedScope: resolvedCwd === null,
+    }
+  }
+
+  triggerSharedSessionSnapshotSync(threadId: string): void {
+    const normalizedThreadId = readText(threadId)
+    if (!normalizedThreadId) return
+
+    try {
+      void this.syncSharedSessionSnapshot(normalizedThreadId).catch(() => {})
+    } catch {
+      // Keep shared snapshot refresh failures isolated from the main bridge flow.
+    }
+  }
+
+  async syncSharedSessionSnapshot(threadId: string): Promise<void> {
+    const normalizedThreadId = readText(threadId)
+    if (!normalizedThreadId) return
+
+    try {
+      await this.ensurePersistedServerRequestsLoaded()
+      const existingSnapshot = await readSharedSessionSnapshot(normalizedThreadId)
+      const payload = asRecord(await this.rpc('thread/read', {
+        threadId: normalizedThreadId,
+        includeTurns: true,
+      })) as ThreadReadResponse | null
+      const thread = asRecord(payload?.thread)
+      if (!thread) return
+
+      const title = readThreadTitle(thread)
+      const cwd = readText(thread.cwd)
+      const messages = normalizeThreadMessagesV2(payload as ThreadReadResponse)
+      const inProgress = normalizeThreadInProgressV2(payload as ThreadReadResponse)
+      const activeTurnId = readText(normalizeActiveTurnIdV2(payload as ThreadReadResponse))
+      const pendingServerRequests = Array.from(this.pendingServerRequests.values())
+        .filter((request) => readRequestThreadId(request) === normalizedThreadId)
+        .map((request) => toProjectorPendingServerRequest(request))
+      const persistedServerRequests = Array.from(this.persistedServerRequests.values()).filter((request) =>
+        readText(request.threadId) === normalizedThreadId,
+      )
+
+      const snapshot = buildSharedSessionSnapshot({
+        sessionId: normalizedThreadId,
+        sourceThreadId: normalizedThreadId,
+        sourceConversationId: existingSnapshot?.sourceConversationId ?? null,
+        title,
+        cwd: cwd || null,
+        owner: existingSnapshot?.owner === 'terminal' ? 'terminal' : 'web',
+        ownerInstanceId: existingSnapshot?.ownerInstanceId ?? null,
+        ownerLeaseExpiresAtIso: existingSnapshot?.ownerLeaseExpiresAtIso ?? null,
+        messages,
+        inProgress,
+        activeTurnId: activeTurnId || null,
+        pendingServerRequests,
+        persistedServerRequests,
+        latestErrorMessage: null,
+        updatedAtIso: new Date().toISOString(),
+      }) as Parameters<typeof writeSharedSessionSnapshot>[0]
+      await writeSharedSessionSnapshot(snapshot)
+    } catch {
+      // Snapshot refresh is best-effort and must never impact the bridge flow.
+    }
+  }
+
+  private async toPersistedServerRequest(pendingRequest: PendingServerRequest): Promise<PersistedServerRequest> {
+    const requestParams = asRecord(pendingRequest.params)
+    return {
+      id: pendingRequest.id,
+      method: pendingRequest.method,
+      threadId: pendingRequest.threadId || (typeof requestParams?.threadId === 'string' ? requestParams.threadId : ''),
+      turnId: typeof requestParams?.turnId === 'string' ? requestParams.turnId : '',
+      itemId: typeof requestParams?.itemId === 'string' ? requestParams.itemId : '',
+      cwd: (await this.resolveRequestWorkspace(pendingRequest.params)).cwd,
+      params: pendingRequest.params,
+      receivedAtIso: pendingRequest.receivedAtIso,
+      resolvedAtIso: null,
+      resolutionKind: null,
+      dismissedAtIso: null,
+      dismissedReason: null,
+      dismissedBy: null,
+    }
+  }
+
+  async dismissPersistedServerRequests(requestIds: number[]): Promise<number[]> {
+    await this.ensurePersistedServerRequestsLoaded()
+    const dismissedRequestIds: number[] = []
+    const affectedThreadIds = new Set<string>()
+    for (const requestId of requestIds) {
+      const current = this.persistedServerRequests.get(requestId)
+      if (!current) continue
+      if (current.resolvedAtIso !== null || current.dismissedAtIso !== null) continue
+      this.persistedServerRequests.set(requestId, {
+        ...current,
+        dismissedAtIso: new Date().toISOString(),
+        dismissedReason: 'user_ignored_branch_block',
+        dismissedBy: 'user',
+      })
+      dismissedRequestIds.push(requestId)
+      const threadId = readText(current.threadId)
+      if (threadId) {
+        affectedThreadIds.add(threadId)
+      }
+    }
+    if (dismissedRequestIds.length > 0) {
+      this.queuePersistedServerRequestsFlush()
+      for (const threadId of affectedThreadIds) {
+        this.triggerSharedSessionSnapshotSync(threadId)
+      }
+    }
+    return dismissedRequestIds
+  }
+
   private resolvePendingServerRequest(requestId: number, reply: ServerRequestReply): void {
     const pendingRequest = this.pendingServerRequests.get(requestId)
     if (!pendingRequest) {
       throw new Error(`No pending server request found for id ${String(requestId)}`)
     }
     this.pendingServerRequests.delete(requestId)
+    const threadId = readRequestThreadId(pendingRequest)
 
+    // Ensure the persisted approval ledger is updated even if the initial upsert
+    // has not yet completed. We use the available pendingRequest data to
+    // create or update the persisted record and mark it as resolved.
+    void (async () => {
+      await this.ensurePersistedServerRequestsLoaded()
+      const existing = this.persistedServerRequests.get(requestId)
+      const resolvedAtIso = new Date().toISOString()
+      const resolutionKind = reply.error ? ('rejected' as const) : ('resolved' as const)
+
+      if (existing) {
+        this.persistedServerRequests.set(requestId, {
+          ...existing,
+          resolvedAtIso,
+          resolutionKind,
+          dismissedAtIso: null,
+          dismissedReason: null,
+          dismissedBy: null,
+        })
+      } else {
+        const persisted = await this.toPersistedServerRequest(pendingRequest)
+        const current = this.persistedServerRequests.get(requestId)
+        this.persistedServerRequests.set(requestId, {
+          ...(current ?? persisted),
+          resolvedAtIso,
+          resolutionKind,
+          dismissedAtIso: null,
+          dismissedReason: null,
+          dismissedBy: null,
+        })
+      }
+
+      this.queuePersistedServerRequestsFlush()
+      this.triggerSharedSessionSnapshotSync(threadId)
+    })()
     this.sendServerRequestReply(requestId, reply)
-    const requestParams = asRecord(pendingRequest.params)
-    const threadId =
-      typeof requestParams?.threadId === 'string' && requestParams.threadId.length > 0
-        ? requestParams.threadId
-        : ''
     this.emitNotification({
       method: 'server/request/resolved',
       params: {
@@ -323,19 +2526,91 @@ class AppServerProcess {
     })
   }
 
-  private handleServerRequest(requestId: number, method: string, params: unknown): void {
+  private async resolveChatgptAuthTokensRefreshPayload(params: unknown): Promise<{
+    accessToken: string
+    chatgptAccountId: string
+    chatgptPlanType: string | null
+  } | null> {
+    const requestParams = asRecord(params)
+    const previousAccountId = readText(requestParams?.previousAccountId)
+    if (!previousAccountId) return null
+
+    const snapshot = await readAccountProfileSnapshot()
+    const matchedProfile = snapshot.profiles.find((profile) => profile.accountId === previousAccountId)
+    if (!matchedProfile?.tokenPayload) return null
+
+    const refreshedPayload = await this.accountTokenBroker.getUsableAccessToken({
+      profileId: matchedProfile.profileId,
+      tokenPayload: matchedProfile.tokenPayload,
+    })
+    if (
+      refreshedPayload.accessToken !== matchedProfile.tokenPayload.accessToken
+      || refreshedPayload.chatgptPlanType !== matchedProfile.tokenPayload.chatgptPlanType
+      || refreshedPayload.expiresAtIso !== matchedProfile.tokenPayload.expiresAtIso
+    ) {
+      await upsertAccountProfile({
+        ...matchedProfile,
+        tokenPayload: refreshedPayload,
+      })
+    }
+
+    return {
+      accessToken: refreshedPayload.accessToken,
+      chatgptAccountId: refreshedPayload.chatgptAccountId,
+      chatgptPlanType: refreshedPayload.chatgptPlanType ?? null,
+    }
+  }
+
+  private enqueuePendingServerRequest(requestId: number, method: string, params: unknown): void {
+    const threadId = readPendingServerRequestThreadId(params)
     const pendingRequest: PendingServerRequest = {
       id: requestId,
       method,
       params,
       receivedAtIso: new Date().toISOString(),
+      threadId,
     }
     this.pendingServerRequests.set(requestId, pendingRequest)
+    void (async () => {
+      const persisted = await this.toPersistedServerRequest(pendingRequest)
+      await this.upsertPersistedServerRequest(persisted)
+    })()
+    this.triggerSharedSessionSnapshotSync(threadId)
 
     this.emitNotification({
       method: 'server/request',
       params: pendingRequest,
     })
+  }
+
+  private handleServerRequest(requestId: number, method: string, params: unknown): void {
+    if (method === ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH_METHOD) {
+      void (async () => {
+        try {
+          const refreshResponse = await this.resolveChatgptAuthTokensRefreshPayload(params)
+          if (refreshResponse) {
+            this.sendServerRequestReply(requestId, { result: refreshResponse })
+            this.emitNotification({
+              method: 'server/request/resolved',
+              params: {
+                id: requestId,
+                method,
+                threadId: readPendingServerRequestThreadId(params),
+                mode: 'auto',
+                resolvedAtIso: new Date().toISOString(),
+              },
+            })
+            return
+          }
+        } catch {
+          // Fallback to manual flow when auto refresh resolution fails.
+        }
+        this.enqueuePendingServerRequest(requestId, method, params)
+      })()
+      return
+    }
+
+    this.enqueuePendingServerRequest(requestId, method, params)
   }
 
   private async call(method: string, params: unknown): Promise<unknown> {
@@ -362,12 +2637,28 @@ class AppServerProcess {
         name: 'codex-web-local',
         version: '0.1.0',
       },
+      capabilities: {
+        experimentalApi: true,
+      },
     })
 
     this.initialized = true
   }
 
   async rpc(method: string, params: unknown): Promise<unknown> {
+    const privateResult = await this.handlePrivateRpc(method, params)
+    if (privateResult !== PRIVATE_RPC_NOT_HANDLED) {
+      return privateResult
+    }
+
+    if (method === 'account/login/start') {
+      const body = asRecord(params)
+      const loginType = readText(body?.type)
+      if (loginType === 'chatgpt') {
+        await this.syncCurrentRuntimeAccountProfile().catch(() => {})
+      }
+    }
+
     await this.ensureInitialized()
     return this.call(method, params)
   }
@@ -413,6 +2704,108 @@ class AppServerProcess {
 
   listPendingServerRequests(): PendingServerRequest[] {
     return Array.from(this.pendingServerRequests.values())
+  }
+
+  private async listPendingServerRequestsForWorkspace(cwd: string): Promise<{
+    requests: PendingServerRequest[]
+    hasUnresolvedScope: boolean
+  }> {
+    const targetCwd = resolve(cwd)
+    const requests = await Promise.all(Array.from(this.pendingServerRequests.values()).map(async (request) => {
+      const resolvedWorkspace = await this.resolveRequestWorkspace(request.params)
+      return { request, resolvedWorkspace }
+    }))
+    return {
+      requests: requests
+        .filter((row) => row.resolvedWorkspace.cwd === targetCwd)
+        .map((row) => row.request)
+        .sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso)),
+      hasUnresolvedScope: requests.some((row) => row.resolvedWorkspace.unresolvedScope),
+    }
+  }
+
+  private async listPersistedServerRequestsForWorkspace(cwd: string): Promise<{
+    requests: PersistedServerRequest[]
+    hasUnresolvedScope: boolean
+  }> {
+    const targetCwd = resolve(cwd)
+    await this.ensurePersistedServerRequestsLoaded()
+    if (this.prunePersistedServerRequests()) {
+      this.queuePersistedServerRequestsFlush()
+    }
+    let shouldFlush = false
+    const requests = await Promise.all(Array.from(this.persistedServerRequests.values()).map(async (request) => {
+      if (request.resolvedAtIso !== null || request.dismissedAtIso !== null) return null
+      const resolvedWorkspace = await this.resolveRequestWorkspace(request.params, request.threadId)
+      if (!request.cwd && resolvedWorkspace.cwd) {
+        this.persistedServerRequests.set(request.id, {
+          ...request,
+          cwd: resolvedWorkspace.cwd,
+        })
+        shouldFlush = true
+      }
+      return {
+        request,
+        resolvedWorkspace: {
+          cwd: request.cwd.trim() ? resolve(request.cwd) : resolvedWorkspace.cwd,
+          unresolvedScope: resolvedWorkspace.unresolvedScope,
+        },
+      }
+    }))
+    if (shouldFlush) {
+      this.queuePersistedServerRequestsFlush()
+    }
+    return {
+      requests: requests
+        .filter((row): row is { request: PersistedServerRequest; resolvedWorkspace: ResolvedRequestWorkspace } => row !== null)
+        .filter((row) => row.resolvedWorkspace.cwd === targetCwd)
+        .map((row) => row.request)
+        .sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso)),
+      hasUnresolvedScope: requests.some((row) => row?.resolvedWorkspace.unresolvedScope === true),
+    }
+  }
+
+  async getWorkspaceGuard(cwd: string): Promise<ServerSideWorkspaceGuard> {
+    const status = await readWorkspaceGitStatus(cwd)
+    if (!status.isRepo) {
+      return {
+        cwd: status.cwd,
+        isRepo: false,
+        blockedReasons: ['not_repo'],
+      }
+    }
+
+    const blockedReasons: ServerSideWorkspaceGuardBlockedReason[] = []
+    if (status.isDirty) {
+      blockedReasons.push('workspace_dirty')
+    }
+    const pendingRequests = await this.listPendingServerRequestsForWorkspace(status.cwd)
+    if (pendingRequests.requests.length > 0) {
+      blockedReasons.push('pending_server_requests')
+    }
+    const persistedRequests = await this.listPersistedServerRequestsForWorkspace(status.cwd)
+    if (persistedRequests.requests.length > 0) {
+      blockedReasons.push('persisted_server_requests')
+    }
+    if (pendingRequests.hasUnresolvedScope || persistedRequests.hasUnresolvedScope) {
+      blockedReasons.push('unresolved_server_request_scope')
+    }
+
+    return {
+      cwd: status.cwd,
+      isRepo: true,
+      blockedReasons,
+    }
+  }
+
+  async listPersistedServerRequests(): Promise<PersistedServerRequest[]> {
+    await this.ensurePersistedServerRequestsLoaded()
+    if (this.prunePersistedServerRequests()) {
+      this.queuePersistedServerRequestsFlush()
+    }
+    return Array.from(this.persistedServerRequests.values())
+      .filter((request) => request.resolvedAtIso === null && request.dismissedAtIso === null)
+      .sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
   }
 
   dispose(): void {
@@ -538,7 +2931,10 @@ class MethodCatalog {
     const clientRequestPath = join(outDir, 'ClientRequest.json')
     const raw = await readFile(clientRequestPath, 'utf8')
     const parsed = JSON.parse(raw) as unknown
-    const methods = this.extractMethodsFromClientRequest(parsed)
+    const methods = Array.from(new Set([
+      ...this.extractMethodsFromClientRequest(parsed),
+      ...PRIVATE_RPC_METHODS,
+    ])).sort((a, b) => a.localeCompare(b))
 
     this.methodCache = methods
     return methods
@@ -571,6 +2967,8 @@ type SharedBridgeState = {
   methodCatalog: MethodCatalog
 }
 
+const PRIVATE_RPC_NOT_HANDLED = Symbol('PRIVATE_RPC_NOT_HANDLED')
+
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
 
 function getSharedBridgeState(): SharedBridgeState {
@@ -589,8 +2987,13 @@ function getSharedBridgeState(): SharedBridgeState {
   return created
 }
 
-export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
+export function createCodexBridgeMiddleware(options: { voiceInputFallback?: VoiceInputFallbackConfig } = {}): CodexBridgeMiddleware {
   const { appServer, methodCatalog } = getSharedBridgeState()
+  appServer.setVoiceInputFallbackConfig(options.voiceInputFallback ?? {
+    provider: 'openai',
+    enabled: false,
+    model: 'gpt-4o-mini-transcribe',
+  })
 
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {
@@ -610,9 +3013,27 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
 
-        const result = await appServer.rpc(body.method, body.params ?? null)
-        setJson(res, 200, { result })
-        return
+        const params = Object.prototype.hasOwnProperty.call(body, 'params')
+          ? body.params
+          : undefined
+
+        try {
+          const result = await appServer.rpc(body.method, params)
+          appServer.triggerSharedSessionSnapshotSync(readThreadIdFromRpcPayload(body.method, params, result))
+          setJson(res, 200, { result })
+          return
+        } catch (error) {
+          if (error instanceof PrivateRpcError) {
+            setJson(res, error.statusCode, { error: { code: error.code, message: error.message } })
+            return
+          }
+          const mappedError = mapLoginStartErrorToPrivateRpcError(body.method, error)
+          if (mappedError) {
+            setJson(res, mappedError.statusCode, { error: { code: mappedError.code, message: mappedError.message } })
+            return
+          }
+          throw error
+        }
       }
 
       if (req.method === 'POST' && url.pathname === '/codex-api/server-requests/respond') {
@@ -622,8 +3043,119 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/shared-sessions') {
+        setJson(res, 200, { data: await listSharedSessionSnapshots() })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-file-changes/fallback') {
+        const threadId = readText(url.searchParams.get('threadId'))
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing query parameter: threadId' })
+          return
+        }
+
+        setJson(res, 200, { data: await appServer.readThreadFileChangesFallback(threadId) })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-file-changes/timeline') {
+        const threadId = readText(url.searchParams.get('threadId'))
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing query parameter: threadId' })
+          return
+        }
+
+        setJson(res, 200, { data: await appServer.readThreadFileChangesTimeline(threadId) })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-file-changes/latest-reversible') {
+        const threadId = readText(url.searchParams.get('threadId'))
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing query parameter: threadId' })
+          return
+        }
+        const latest = await appServer.readLatestReversibleThreadFileChange(threadId)
+        if (!latest) {
+          setThreadFileChangeActionError(res, new ThreadFileChangeActionError(
+            'no_reversible_turn',
+            `No reversible file change found for thread ${threadId}`,
+            404,
+          ))
+          return
+        }
+        setJson(res, 200, { data: latest })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-file-changes/undo-latest') {
+        const payload = asRecord(await readJsonBody(req))
+        const threadId = readText(payload?.threadId)
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing body field: threadId' })
+          return
+        }
+        try {
+          setJson(res, 200, { data: await appServer.applyLatestReversibleThreadFileChange(threadId, 'undo') })
+        } catch (error) {
+          if (isThreadFileChangeActionError(error)) {
+            setThreadFileChangeActionError(res, error)
+            return
+          }
+          throw error
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-file-changes/reapply-latest') {
+        const payload = asRecord(await readJsonBody(req))
+        const threadId = readText(payload?.threadId)
+        if (!threadId) {
+          setJson(res, 400, { error: 'Missing body field: threadId' })
+          return
+        }
+        try {
+          setJson(res, 200, { data: await appServer.applyLatestReversibleThreadFileChange(threadId, 'reapply') })
+        } catch (error) {
+          if (isThreadFileChangeActionError(error)) {
+            setThreadFileChangeActionError(res, error)
+            return
+          }
+          throw error
+        }
+        return
+      }
+
+      const sharedSessionPrefix = '/codex-api/shared-sessions/'
+      if (req.method === 'GET' && url.pathname.startsWith(sharedSessionPrefix)) {
+        const sessionId = decodeURIComponent(url.pathname.slice(sharedSessionPrefix.length)).trim()
+        if (!sessionId) {
+          setJson(res, 400, { error: 'Missing path parameter: sessionId' })
+          return
+        }
+
+        setJson(res, 200, { data: await readSharedSessionSnapshot(sessionId) })
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/server-requests/pending') {
         setJson(res, 200, { data: appServer.listPendingServerRequests() })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/server-requests/persisted') {
+        setJson(res, 200, { data: await appServer.listPersistedServerRequests() })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/server-requests/persisted/dismiss') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        const requestIds = Array.isArray(body?.requestIds)
+          ? body.requestIds.filter((value): value is number => typeof value === 'number' && Number.isInteger(value))
+          : []
+        setJson(res, 200, { data: await appServer.dismissPersistedServerRequests(requestIds) })
         return
       }
 
@@ -716,6 +3248,167 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 200, { diff: '', warning: message })
           return
         }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/workspace-diff-mode') {
+        const cwd = url.searchParams.get('cwd') ?? ''
+        const mode = normalizeWorkspaceDiffMode(url.searchParams.get('mode') ?? '')
+        const baseBranch = url.searchParams.get('baseBranch')
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing query parameter: cwd' })
+          return
+        }
+        if (!mode) {
+          setJson(res, 400, { error: 'Invalid query parameter: mode' })
+          return
+        }
+        try {
+          const snapshot = await collectWorkspaceDiffSnapshot(cwd, mode, { baseBranch })
+          setJson(res, 200, snapshot)
+          return
+        } catch (error) {
+          const message = getErrorMessage(error, 'Failed to collect workspace diff mode')
+          setJson(res, 200, {
+            mode,
+            cwd: resolve(cwd),
+            label: '',
+            baseRef: null,
+            targetRef: null,
+            warning: message,
+            files: [],
+            totalAdditions: 0,
+            totalDeletions: 0,
+          } satisfies WorkspaceDiffSnapshot)
+          return
+        }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/git/status') {
+        const cwd = url.searchParams.get('cwd') ?? ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing query parameter: cwd' })
+          return
+        }
+
+        const status = await readWorkspaceGitStatus(cwd)
+        setJson(res, 200, status)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/git/branches') {
+        const cwd = url.searchParams.get('cwd') ?? ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing query parameter: cwd' })
+          return
+        }
+
+        const branches = await readWorkspaceBranches(cwd)
+        setJson(res, 200, branches)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/git/push/status') {
+        const cwd = url.searchParams.get('cwd') ?? ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing query parameter: cwd' })
+          return
+        }
+
+        const status = await readWorkspacePushStatus(cwd)
+        setJson(res, 200, status)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git/push') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing body field: cwd' })
+          return
+        }
+
+        try {
+          const guard = await appServer.getWorkspaceGuard(cwd)
+          if (guard.blockedReasons.length > 0) {
+            setJson(res, 409, {
+              error: 'Workspace push is blocked by current workspace state',
+              blockedReasons: guard.blockedReasons,
+            })
+            return
+          }
+
+          const metadata = await resolveWorkspacePushMetadata(cwd)
+          if (!metadata.currentBranch) {
+            setJson(res, 400, {
+              error: 'Current HEAD is detached; cannot push',
+            })
+            return
+          }
+
+          const result = await pushWorkspaceBranch(cwd)
+          setJson(res, 200, {
+            ok: true,
+            ...result,
+          })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, 'Failed to push branch') })
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git/branch/switch') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+        const branch = typeof body?.branch === 'string' ? body.branch : ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing body field: cwd' })
+          return
+        }
+
+        try {
+          const guard = await appServer.getWorkspaceGuard(cwd)
+          if (guard.blockedReasons.length > 0) {
+            setJson(res, 409, {
+              error: 'Workspace branch action is blocked by current workspace state',
+              blockedReasons: guard.blockedReasons,
+            })
+            return
+          }
+          await switchWorkspaceBranch(cwd, branch)
+          setJson(res, 200, { ok: true })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, 'Failed to switch branch') })
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git/branch/create-and-switch') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+        const branch = typeof body?.branch === 'string' ? body.branch : ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing body field: cwd' })
+          return
+        }
+
+        try {
+          const guard = await appServer.getWorkspaceGuard(cwd)
+          if (guard.blockedReasons.length > 0) {
+            setJson(res, 409, {
+              error: 'Workspace branch action is blocked by current workspace state',
+              blockedReasons: guard.blockedReasons,
+            })
+            return
+          }
+          await createAndSwitchWorkspaceBranch(cwd, branch)
+          setJson(res, 200, { ok: true })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, 'Failed to create branch') })
+        }
+        return
       }
 
       if (req.method === 'GET' && url.pathname === '/codex-api/events') {

@@ -80,6 +80,86 @@ const UI_TEXT = {
     zh: ({ time }) => `排队于 ${String(time)}`,
     en: ({ time }) => `Queued at ${String(time)}`,
   },
+  'app.sharedSessionStatusIdle': {
+    zh: '已同步',
+    en: 'Synced',
+  },
+  'app.sharedSessionStatusRunning': {
+    zh: '正在继续',
+    en: 'Running',
+  },
+  'app.sharedSessionStatusNeedsAttention': {
+    zh: '等待处理',
+    en: 'Needs attention',
+  },
+  'app.sharedSessionStatusFailed': {
+    zh: '本轮失败',
+    en: 'Failed',
+  },
+  'app.sharedSessionStatusInterrupted': {
+    zh: '已中断',
+    en: 'Interrupted',
+  },
+  'app.sharedSessionStatusStaleOwner': {
+    zh: '控制端可能过期',
+    en: 'Owner may be stale',
+  },
+  'app.sharedSessionOwnerWeb': {
+    zh: 'Web',
+    en: 'Web',
+  },
+  'app.sharedSessionOwnerTerminal': {
+    zh: '终端',
+    en: 'Terminal',
+  },
+  'app.sharedSessionControlledBy': {
+    zh: ({ owner }) => `当前由 ${String(owner)} 控制`,
+    en: ({ owner }) => `Currently controlled by ${String(owner)}`,
+  },
+  'app.sharedSessionLatestTurn': {
+    zh: '最近进展已同步',
+    en: 'Latest progress synced',
+  },
+  'app.sharedSessionPendingApprovals': {
+    zh: ({ count }) => `${String(count)} 条授权待处理`,
+    en: ({ count }) => `${String(count)} approval(s) pending`,
+  },
+  'app.sharedSessionPendingApprovalsShort': {
+    zh: ({ count }) => `${String(count)} 条授权`,
+    en: ({ count }) => `${String(count)} approval(s)`,
+  },
+  'app.sharedSessionPendingAttentionRequests': {
+    zh: ({ count }) => `${String(count)} 条待处理请求`,
+    en: ({ count }) => `${String(count)} request(s) need attention`,
+  },
+  'app.sharedSessionPendingAttentionRequestsShort': {
+    zh: ({ count }) => `${String(count)} 条待处理`,
+    en: ({ count }) => `${String(count)} pending item(s)`,
+  },
+  'app.sharedSessionPersistedApprovalRecords': {
+    zh: ({ count }) => `${String(count)} 条遗留授权记录`,
+    en: ({ count }) => `${String(count)} stale approval record(s)`,
+  },
+  'app.sharedSessionPersistedApprovalRecordsShort': {
+    zh: ({ count }) => `${String(count)} 条遗留记录`,
+    en: ({ count }) => `${String(count)} stale record(s)`,
+  },
+  'app.sharedSessionApprovalNeedsReplay': {
+    zh: ({ count }) => `${String(count)} 条授权记录已失效，请重新触发审批`,
+    en: ({ count }) => `${String(count)} approval record(s) expired; re-trigger approval to continue`,
+  },
+  'app.sharedSessionReturnToOwner': {
+    zh: '请返回控制端继续处理',
+    en: 'Return to the owner client to continue',
+  },
+  'app.sharedSessionActiveTurn': {
+    zh: '活动 Turn',
+    en: 'Active turn',
+  },
+  'app.sharedSessionLatestError': {
+    zh: ({ message }) => `最近错误：${String(message)}`,
+    en: ({ message }) => `Latest error: ${String(message)}`,
+  },
   'composer.model': {
     zh: '模型',
     en: 'Model',
@@ -95,6 +175,286 @@ const UI_TEXT = {
   'composer.branch': {
     zh: '分支',
     en: 'Branch',
+  },
+  'composer.branchMenuTitle': {
+    zh: '切换、创建或推送分支',
+    en: 'Switch, create, or push branch',
+  },
+  'composer.branchWorkspaceHint': {
+    zh: '分支操作会作用于当前工作区',
+    en: 'Branch actions apply to the current workspace',
+  },
+  'composer.branchLoading': {
+    zh: '正在读取分支...',
+    en: 'Loading branches...',
+  },
+  'composer.branchCurrent': {
+    zh: '当前',
+    en: 'Current',
+  },
+  'composer.branchEmpty': {
+    zh: '当前工作区没有可切换的本地分支',
+    en: 'No local branches available',
+  },
+  'composer.branchCreatePlaceholder': {
+    zh: '输入新分支名',
+    en: 'New branch name',
+  },
+  'composer.branchCreate': {
+    zh: '创建并切换',
+    en: 'Create & switch',
+  },
+  'composer.branchPushTitle': {
+    zh: '远端推送',
+    en: 'Remote push',
+  },
+  'composer.branchPushLoading': {
+    zh: '正在读取远端推送状态...',
+    en: 'Loading remote push status...',
+  },
+  'composer.branchPushReady': {
+    zh: ({ target }) => `有提交可推送到 ${String(target)}`,
+    en: ({ target }) => `Commits are ready to push to ${String(target)}`,
+  },
+  'composer.branchPushAction': {
+    zh: ({ target }) => `推送到 ${String(target)}`,
+    en: ({ target }) => `Push to ${String(target)}`,
+  },
+  'composer.branchPushSetUpstreamAction': {
+    zh: ({ target }) => `推送并关联 ${String(target)}`,
+    en: ({ target }) => `Push and track ${String(target)}`,
+  },
+  'composer.branchPushUpToDate': {
+    zh: '当前分支已与远端同步',
+    en: 'Current branch is up to date with remote',
+  },
+  'composer.branchPushMissingUpstream': {
+    zh: '当前分支尚未关联远端分支',
+    en: 'Current branch has no upstream configured',
+  },
+  'composer.branchPushSuggestedCommand': {
+    zh: ({ command }) => `请先在终端执行：${String(command)}`,
+    en: ({ command }) => `Run this in a terminal first: ${String(command)}`,
+  },
+  'composer.branchPushDetachedHead': {
+    zh: '当前 HEAD 未附着到命名分支，暂时不能推送',
+    en: 'Current HEAD is detached, so push is unavailable',
+  },
+  'composer.branchPushBehindWarning': {
+    zh: ({ count }) => `远端领先 ${String(count)} 个提交，推送可能失败`,
+    en: ({ count }) => `Remote is ahead by ${String(count)} commits, so push may fail`,
+  },
+  'composer.pushBlockedUnresolvedScope': {
+    zh: '存在未归属到当前工作区的审批请求或记录，暂时不能推送',
+    en: 'Approval requests or records are not scoped to this workspace, so push is unavailable',
+  },
+  'composer.branchPushing': {
+    zh: '推送中...',
+    en: 'Pushing...',
+  },
+  'composer.branchSwitching': {
+    zh: '切换中...',
+    en: 'Switching...',
+  },
+  'composer.branchBlockedNotRepo': {
+    zh: '当前目录不是 Git 仓库',
+    en: 'Current folder is not a Git repository',
+  },
+  'composer.branchBlockedDirty': {
+    zh: '工作区有未提交改动',
+    en: 'Workspace has uncommitted changes',
+  },
+  'composer.branchBlockedInProgress': {
+    zh: '有线程仍在执行中',
+    en: 'A thread is still running',
+  },
+  'composer.branchBlockedQueued': {
+    zh: '有排队中的消息待发送',
+    en: 'Queued messages are pending',
+  },
+  'composer.branchBlockedPendingRequests': {
+    zh: '有待处理的审批请求',
+    en: 'Pending approval requests exist',
+  },
+  'composer.branchBlockedPersistedRequests': {
+    zh: '检测到未闭合审批记录',
+    en: 'Detected unresolved approval records',
+  },
+  'composer.branchGlobalRequestsHint': {
+    zh: '当前会话存在未归属到此工作区的审批请求或记录，请先留意处理。',
+    en: 'This session has approval requests or records that are not scoped to the current workspace.',
+  },
+  'composer.branchPersistedRecordsTitle': {
+    zh: '未闭合审批记录',
+    en: 'Unresolved approval records',
+  },
+  'composer.branchPersistedRecordReceivedAt': {
+    zh: ({ time }) => `记录于 ${String(time)}`,
+    en: ({ time }) => `Recorded at ${String(time)}`,
+  },
+  'composer.branchPersistedRecordDismiss': {
+    zh: '忽略阻塞',
+    en: 'Ignore block',
+  },
+  'composer.branchPersistedRecordDismissConfirm': {
+    zh: '这只会忽略本地未闭合审批记录对分支切换的阻塞，不会处理实时审批。是否继续？',
+    en: 'This only ignores the local blocking record for branch switching and will not resolve any live approval. Continue?',
+  },
+  'diffPanel.title': {
+    zh: '差异面板',
+    en: 'Diff panel',
+  },
+  'diffPanel.filesUnit': {
+    zh: '个文件',
+    en: 'files',
+  },
+  'diffPanel.mode.unstaged': {
+    zh: '未暂存',
+    en: 'Unstaged',
+  },
+  'diffPanel.mode.staged': {
+    zh: '已暂存',
+    en: 'Staged',
+  },
+  'diffPanel.mode.branch': {
+    zh: '全部分支更改',
+    en: 'Branch changes',
+  },
+  'diffPanel.mode.lastCommit': {
+    zh: '上一轮更改',
+    en: 'Last commit',
+  },
+  'diffPanel.mode.gitStatus': {
+    zh: 'Git 状态',
+    en: 'Git status',
+  },
+  'diffPanel.desc.unstaged': {
+    zh: '显示当前工作区尚未暂存的内容差异。',
+    en: 'Shows unstaged content differences in the current workspace.',
+  },
+  'diffPanel.desc.staged': {
+    zh: '显示当前工作区已暂存但尚未提交的内容差异。',
+    en: 'Shows staged but uncommitted content differences in the current workspace.',
+  },
+  'diffPanel.desc.branch': {
+    zh: '显示当前分支相对基线分支的累计改动。',
+    en: 'Shows cumulative changes on the current branch relative to the base branch.',
+  },
+  'diffPanel.desc.lastCommit': {
+    zh: '显示最近一次提交的内容差异。',
+    en: 'Shows the content differences from the most recent commit.',
+  },
+  'diffPanel.desc.gitStatus': {
+    zh: '显示当前工作区的 Git 状态与阻塞原因。',
+    en: 'Shows the current Git states and blockers for the workspace.',
+  },
+  'diffPanel.baseBranchLabel': {
+    zh: '基线分支',
+    en: 'Base branch',
+  },
+  'diffPanel.baseBranchAuto': {
+    zh: '自动选择',
+    en: 'Auto',
+  },
+  'diffPanel.baseBranchConfigured': {
+    zh: ({ branch }) => `当前配置基线：${String(branch)}`,
+    en: ({ branch }) => `Configured base: ${String(branch)}`,
+  },
+  'diffPanel.baseBranchInferred': {
+    zh: ({ branch }) => `自动推导基线：${String(branch)}`,
+    en: ({ branch }) => `Inferred base: ${String(branch)}`,
+  },
+  'diffPanel.empty.noChanges': {
+    zh: '当前模式下没有可显示的差异。',
+    en: 'No differences are available for this mode.',
+  },
+  'diffPanel.empty.branchBaseMissing': {
+    zh: '未能从当前仓库的本地 Git 信息推导比较基线，暂时无法计算全部分支更改。',
+    en: 'A comparison base could not be inferred from local Git metadata, so branch changes cannot be computed yet.',
+  },
+  'diffPanel.empty.warning': {
+    zh: '当前模式无法稳定生成差异，请查看提示信息。',
+    en: 'The selected mode could not produce a stable diff. See the warning for details.',
+  },
+  'diffPanel.gitStatusCurrentBranch': {
+    zh: ({ branch }) => `当前分支：${String(branch)}`,
+    en: ({ branch }) => `Current branch: ${String(branch)}`,
+  },
+  'diffPanel.gitStatusBlockersTitle': {
+    zh: '当前阻塞原因',
+    en: 'Current blockers',
+  },
+  'diffPanel.gitStatusEmpty': {
+    zh: '当前工作区没有额外的 Git 状态条目。',
+    en: 'No additional Git state entries were found for this workspace.',
+  },
+  'diffPanel.gitStatusTagStaged': {
+    zh: '已暂存',
+    en: 'Staged',
+  },
+  'diffPanel.gitStatusTagUnstaged': {
+    zh: '未暂存',
+    en: 'Unstaged',
+  },
+  'diffPanel.gitStatusKind.modified': {
+    zh: '已修改',
+    en: 'Modified',
+  },
+  'diffPanel.gitStatusKind.added': {
+    zh: '新增',
+    en: 'Added',
+  },
+  'diffPanel.gitStatusKind.deleted': {
+    zh: '删除',
+    en: 'Deleted',
+  },
+  'diffPanel.gitStatusKind.renamed': {
+    zh: '重命名',
+    en: 'Renamed',
+  },
+  'diffPanel.gitStatusKind.untracked': {
+    zh: '未跟踪',
+    en: 'Untracked',
+  },
+  'diffPanel.gitStatusKind.conflicted': {
+    zh: '冲突',
+    en: 'Conflicted',
+  },
+  'diffPanel.gitStatusKind.unknown': {
+    zh: '未知',
+    en: 'Unknown',
+  },
+  'composer.branchDirtyTrackedModified': {
+    zh: ({ count }) => `已修改 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} modified`,
+  },
+  'composer.branchDirtyStaged': {
+    zh: ({ count }) => `已暂存 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} staged`,
+  },
+  'composer.branchDirtyUntracked': {
+    zh: ({ count }) => `未跟踪 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} untracked`,
+  },
+  'composer.branchDirtyConflicted': {
+    zh: ({ count }) => `冲突 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} conflicted`,
+  },
+  'composer.branchDirtyRenamed': {
+    zh: ({ count }) => `重命名 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} renamed`,
+  },
+  'composer.branchDirtyDeleted': {
+    zh: ({ count }) => `删除 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} deleted`,
+  },
+  'composer.branchDirtyEntriesTitle': {
+    zh: '涉及文件',
+    en: 'Affected files',
+  },
+  'composer.branchDirtyEntriesMore': {
+    zh: ({ count }) => `另有 ${String(count)} 项`,
+    en: ({ count }) => `${String(count)} more`,
   },
   'composer.quotaRemaining': {
     zh: ({ percent }) => `${String(percent)}% 额度`,
@@ -224,6 +584,34 @@ const UI_TEXT = {
     zh: '输入消息...',
     en: 'Type a message...',
   },
+  'composer.voiceInput': {
+    zh: '语音输入',
+    en: 'Voice input',
+  },
+  'composer.voiceListening': {
+    zh: '正在聆听语音',
+    en: 'Listening for speech',
+  },
+  'composer.voiceRecording': {
+    zh: '正在录音',
+    en: 'Recording audio',
+  },
+  'composer.voiceTranscribing': {
+    zh: '正在转写语音',
+    en: 'Transcribing audio',
+  },
+  'composer.voicePermissionDenied': {
+    zh: '麦克风权限被拒绝',
+    en: 'Microphone permission was denied',
+  },
+  'composer.voiceQuotaExceeded': {
+    zh: '语音转写额度不足，请检查当前 provider 的余额或更换 key',
+    en: 'Voice transcription quota was exceeded. Check billing or use another key.',
+  },
+  'composer.voiceTranscriptionFailed': {
+    zh: '语音转写失败，请重试',
+    en: 'Voice transcription failed. Try again.',
+  },
   'composer.selectThreadFirst': {
     zh: '请选择一个会话后再发送消息',
     en: 'Select a thread to send a message',
@@ -259,6 +647,46 @@ const UI_TEXT = {
   'threadConversation.noMessages': {
     zh: '当前会话还没有消息',
     en: 'No messages in this thread yet.',
+  },
+  'threadConversation.approvalCommandTitle': {
+    zh: '是否允许执行此命令？',
+    en: 'Allow this command to run?',
+  },
+  'threadConversation.approvalFileTitle': {
+    zh: '是否允许应用这些文件改动？',
+    en: 'Allow these file changes?',
+  },
+  'threadConversation.approvalSubmit': {
+    zh: '提交',
+    en: 'Submit',
+  },
+  'threadConversation.approvalSkip': {
+    zh: '跳过',
+    en: 'Skip',
+  },
+  'threadConversation.approvalCwdLabel': {
+    zh: '执行目录',
+    en: 'Working directory',
+  },
+  'threadConversation.approvalReasonLabel': {
+    zh: '触发原因',
+    en: 'Reason',
+  },
+  'threadConversation.approvalSummaryLabel': {
+    zh: '预计操作',
+    en: 'Planned actions',
+  },
+  'threadConversation.approvalGrantRootLabel': {
+    zh: '授权目录',
+    en: 'Granted root',
+  },
+  'threadConversation.approvalFileSummary': {
+    zh: ({ count, additions, deletions }) => `共 ${String(count)} 个文件，+${String(additions)} / -${String(deletions)}`,
+    en: ({ count, additions, deletions }) => `${String(count)} files, +${String(additions)} / -${String(deletions)}`,
+  },
+  'threadConversation.approvalOpenDiff': {
+    zh: '查看完整 Diff',
+    en: 'Open full diff',
   },
   'threadConversation.otherAnswer': {
     zh: '其他答案',
@@ -307,6 +735,30 @@ const UI_TEXT = {
   'threadConversation.workedFor': {
     zh: ({ duration }) => `耗时 ${String(duration)}`,
     en: ({ duration }) => `Worked for ${String(duration)}`,
+  },
+  'threadConversation.copy': {
+    zh: '复制',
+    en: 'Copy',
+  },
+  'threadConversation.copied': {
+    zh: '已复制',
+    en: 'Copied',
+  },
+  'threadConversation.copyMessage': {
+    zh: '复制消息',
+    en: 'Copy message',
+  },
+  'threadConversation.undoLatestFileChange': {
+    zh: '撤销本次变更',
+    en: 'Undo this change',
+  },
+  'threadConversation.reapplyLatestFileChange': {
+    zh: '重新应用本次变更',
+    en: 'Reapply this change',
+  },
+  'threadConversation.viewFileChangeDiff': {
+    zh: '查看 Diff',
+    en: 'View diff',
   },
   'sidebar.expand': {
     zh: '展开侧边栏',

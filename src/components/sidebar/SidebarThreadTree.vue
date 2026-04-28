@@ -17,11 +17,18 @@
                 </button>
               </span>
             </template>
-            <button class="thread-main-button" type="button" :title="thread.preview || thread.title" @click="onSelect(thread.id)">
-              <span class="thread-row-title">{{ thread.title }}</span>
-            </button>
+            <span class="thread-row-main">
+                <button class="thread-main-button" type="button" :title="thread.preview || thread.title" @click="onSelect(thread.id)">
+                <span class="thread-row-text">
+                  <span class="thread-row-title">{{ thread.title }}</span>
+                  <span v-if="readThreadStatusSubtitle(thread.id)" class="thread-row-subtitle">{{ readThreadStatusSubtitle(thread.id) }}</span>
+                </span>
+              </button>
+            </span>
             <template #right>
-              <span class="thread-row-time">{{ formatRelative(thread.createdAtIso || thread.updatedAtIso) }}</span>
+              <span class="thread-row-time-wrap">
+                <span class="thread-row-time">{{ formatRelative(thread.createdAtIso || thread.updatedAtIso) }}</span>
+              </span>
             </template>
             <template #right-hover>
               <div class="thread-hover-controls">
@@ -200,11 +207,18 @@
                     </button>
                   </span>
                 </template>
-                <button class="thread-main-button" type="button" :title="thread.preview || thread.title" @click="onSelect(thread.id)">
-                  <span class="thread-row-title">{{ thread.title }}</span>
-                </button>
+                <span class="thread-row-main">
+                  <button class="thread-main-button" type="button" :title="thread.preview || thread.title" @click="onSelect(thread.id)">
+                    <span class="thread-row-text">
+                      <span class="thread-row-title">{{ thread.title }}</span>
+                      <span v-if="readThreadStatusSubtitle(thread.id)" class="thread-row-subtitle">{{ readThreadStatusSubtitle(thread.id) }}</span>
+                    </span>
+                  </button>
+                </span>
                 <template #right>
-                  <span class="thread-row-time">{{ formatRelative(thread.createdAtIso || thread.updatedAtIso) }}</span>
+                  <span class="thread-row-time-wrap">
+                    <span class="thread-row-time">{{ formatRelative(thread.createdAtIso || thread.updatedAtIso) }}</span>
+                  </span>
                 </template>
                 <template #right-hover>
                   <div class="thread-hover-controls">
@@ -287,7 +301,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
-import type { UiProjectGroup, UiThread } from '../../types/codex'
+import type { UiProjectGroup, UiSharedSessionSnapshot, UiThread } from '../../types/codex'
 import { tUi, type UiLanguage, type UiTextKey } from '../../i18n/uiText'
 import IconTablerArchive from '../icons/IconTablerArchive.vue'
 import IconTablerCheck from '../icons/IconTablerCheck.vue'
@@ -311,6 +325,8 @@ const props = defineProps<{
   selectedThreadId: string
   isLoading: boolean
   searchQuery: string
+  sharedSessionSnapshotByThreadId: Record<string, UiSharedSessionSnapshot>
+  liveApprovalThreadIdSet: Set<string>
   uiLanguage?: UiLanguage
 }>()
 
@@ -1072,6 +1088,11 @@ function getThreadState(thread: UiThread): 'working' | 'unread' | 'idle' {
   return 'idle'
 }
 
+function readThreadStatusSubtitle(threadId: string): string {
+  if (!props.liveApprovalThreadIdSet.has(threadId)) return ''
+  return normalizedLanguage.value === 'zh' ? '待审批' : 'Pending approval'
+}
+
 watch(
   () => props.groups.map((group) => group.projectName),
   (projectNames) => {
@@ -1127,19 +1148,28 @@ onBeforeUnmount(() => {
 }
 
 .thread-tree-header {
-  @apply text-sm font-normal text-zinc-500 select-none;
+  @apply text-sm font-normal select-none;
+  color: var(--color-text-secondary);
 }
 
 .thread-start-button {
-  @apply h-5 w-5 rounded text-zinc-500 flex items-center justify-center transition hover:bg-zinc-200 hover:text-zinc-700;
+  @apply h-5 w-5 rounded flex items-center justify-center transition;
+  color: var(--color-text-muted);
+}
+
+.thread-start-button:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
 }
 
 .thread-tree-loading {
-  @apply px-3 py-2 text-sm text-zinc-500;
+  @apply px-3 py-2 text-sm;
+  color: var(--color-text-secondary);
 }
 
 .thread-tree-no-results {
-  @apply px-3 py-2 text-sm text-zinc-400;
+  @apply px-3 py-2 text-sm;
+  color: var(--color-text-muted);
 }
 
 .thread-tree-groups {
@@ -1155,7 +1185,15 @@ onBeforeUnmount(() => {
 }
 
 .project-header-row {
-  @apply hover:bg-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400;
+  @apply cursor-pointer focus-visible:outline-none focus-visible:ring-1;
+}
+
+.project-header-row:hover {
+  background: var(--color-bg-subtle);
+}
+
+.project-header-row:focus-visible {
+  --tw-ring-color: var(--color-border-strong);
 }
 
 .project-main-button {
@@ -1167,7 +1205,8 @@ onBeforeUnmount(() => {
 }
 
 .project-icon-stack {
-  @apply relative w-4 h-4 flex items-center justify-center text-zinc-500;
+  @apply relative w-4 h-4 flex items-center justify-center;
+  color: var(--color-text-muted);
 }
 
 .project-icon-folder {
@@ -1179,7 +1218,8 @@ onBeforeUnmount(() => {
 }
 
 .project-title {
-  @apply text-sm font-normal text-zinc-700 truncate select-none;
+  @apply text-sm font-normal truncate select-none;
+  color: var(--color-text-secondary);
 }
 
 .project-menu-wrap {
@@ -1191,15 +1231,23 @@ onBeforeUnmount(() => {
 }
 
 .project-menu-trigger {
-  @apply h-4 w-4 rounded p-0 text-zinc-600 flex items-center justify-center;
+  @apply h-4 w-4 rounded p-0 flex items-center justify-center;
+  color: var(--color-text-secondary);
 }
 
 .project-menu-panel {
-  @apply absolute right-0 top-full mt-1 z-20 min-w-36 rounded-md border border-zinc-200 bg-white p-1 shadow-md flex flex-col gap-0.5;
+  @apply absolute right-0 top-full mt-1 z-20 min-w-36 rounded-md border p-1 shadow-md flex flex-col gap-0.5;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-elevated);
 }
 
 .project-menu-item {
-  @apply rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100;
+  @apply rounded px-2 py-1 text-left text-sm;
+  color: var(--color-text-secondary);
+}
+
+.project-menu-item:hover {
+  background: var(--color-bg-subtle);
 }
 
 .project-menu-item-danger {
@@ -1207,11 +1255,15 @@ onBeforeUnmount(() => {
 }
 
 .project-menu-label {
-  @apply px-2 pt-1 text-xs text-zinc-500;
+  @apply px-2 pt-1 text-xs;
+  color: var(--color-text-muted);
 }
 
 .project-menu-input {
-  @apply px-2 py-1 text-sm text-zinc-800 bg-zinc-50 border border-zinc-200 rounded outline-none w-full;
+  @apply px-2 py-1 text-sm rounded outline-none w-full border;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
 }
 
 .thread-hover-controls {
@@ -1223,23 +1275,39 @@ onBeforeUnmount(() => {
 }
 
 .thread-menu-trigger {
-  @apply h-4 w-4 rounded p-0 text-zinc-600 flex items-center justify-center hover:bg-zinc-300;
+  @apply h-4 w-4 rounded p-0 flex items-center justify-center;
+  color: var(--color-text-secondary);
+}
+
+.thread-menu-trigger:hover {
+  background: var(--color-bg-subtle);
 }
 
 .thread-menu-panel {
-  @apply absolute right-0 top-full mt-1 z-20 min-w-36 rounded-md border border-zinc-200 bg-white p-1 shadow-md flex flex-col gap-0.5;
+  @apply absolute right-0 top-full mt-1 z-20 min-w-36 rounded-md border p-1 shadow-md flex flex-col gap-0.5;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-elevated);
 }
 
 .thread-menu-item {
-  @apply rounded px-2 py-1 text-left text-sm text-zinc-700 hover:bg-zinc-100;
+  @apply rounded px-2 py-1 text-left text-sm;
+  color: var(--color-text-secondary);
+}
+
+.thread-menu-item:hover {
+  background: var(--color-bg-subtle);
 }
 
 .thread-menu-label {
-  @apply px-2 pt-1 text-xs text-zinc-500;
+  @apply px-2 pt-1 text-xs;
+  color: var(--color-text-muted);
 }
 
 .thread-menu-input {
-  @apply px-2 py-1 text-sm text-zinc-800 bg-zinc-50 border border-zinc-200 rounded outline-none flex-1;
+  @apply px-2 py-1 text-sm rounded outline-none flex-1 border;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
 }
 
 .thread-rename-form {
@@ -1259,7 +1327,12 @@ onBeforeUnmount(() => {
 }
 
 .thread-rename-action-btn.cancel {
-  @apply bg-zinc-100 text-zinc-600 hover:bg-zinc-200;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.thread-rename-action-btn.cancel:hover {
+  background: var(--color-bg-muted);
 }
 
 .project-empty-row {
@@ -1271,7 +1344,8 @@ onBeforeUnmount(() => {
 }
 
 .project-empty {
-  @apply text-sm text-zinc-400;
+  @apply text-sm;
+  color: var(--color-text-muted);
 }
 
 .thread-list {
@@ -1287,7 +1361,11 @@ onBeforeUnmount(() => {
 }
 
 .thread-row {
-  @apply h-8 hover:bg-zinc-200;
+  @apply min-h-8 py-1;
+}
+
+.thread-row:hover {
+  background: var(--color-bg-subtle);
 }
 
 .thread-left-stack {
@@ -1295,23 +1373,43 @@ onBeforeUnmount(() => {
 }
 
 .thread-pin-button {
-  @apply absolute inset-0 w-4 h-4 rounded text-zinc-500 opacity-0 pointer-events-none transition flex items-center justify-center;
+  @apply absolute inset-0 w-4 h-4 rounded opacity-0 pointer-events-none transition flex items-center justify-center;
+  color: var(--color-text-muted);
 }
 
 .thread-main-button {
-  @apply min-w-0 w-full text-left rounded px-0 py-0 flex items-center h-5;
+  @apply min-w-0 flex-1 w-full overflow-hidden text-left rounded px-0 py-0 flex items-center;
+}
+
+.thread-row-main {
+  @apply min-w-0 flex-1 overflow-hidden;
+}
+
+.thread-row-text {
+  @apply min-w-0 w-full flex flex-col items-start justify-center;
 }
 
 .thread-row-title {
-  @apply block text-sm leading-5 font-normal text-zinc-800 truncate whitespace-nowrap;
+  @apply block w-full text-sm leading-5 font-normal truncate whitespace-nowrap;
+  color: var(--color-text-primary);
+}
+
+.thread-row-subtitle {
+  @apply block w-full text-[11px] leading-4 truncate whitespace-nowrap;
+  color: var(--color-text-muted);
 }
 
 .thread-status-indicator {
   @apply w-2.5 h-2.5 rounded-full;
 }
 
+.thread-row-time-wrap {
+  @apply inline-flex w-14 shrink-0 justify-end;
+}
+
 .thread-row-time {
-  @apply block text-sm font-normal text-zinc-500;
+  @apply block max-w-full text-xs font-normal truncate whitespace-nowrap;
+  color: var(--color-text-secondary);
 }
 
 .thread-hover-right-wrap {
@@ -1319,11 +1417,13 @@ onBeforeUnmount(() => {
 }
 
 .thread-row-preview {
-  @apply min-w-0 flex-1 block text-xs leading-4 text-zinc-500 truncate whitespace-nowrap;
+  @apply min-w-0 flex-1 block text-xs leading-4 truncate whitespace-nowrap;
+  color: var(--color-text-muted);
 }
 
 .thread-archive-button {
-  @apply h-4 w-4 rounded p-0 text-xs text-zinc-600 flex items-center justify-center;
+  @apply h-4 w-4 rounded p-0 text-xs flex items-center justify-center;
+  color: var(--color-text-secondary);
 }
 
 .thread-archive-button[data-confirm='true'] {
@@ -1343,7 +1443,13 @@ onBeforeUnmount(() => {
 }
 
 .thread-show-more-button {
-  @apply block mx-auto rounded-lg px-2 py-0.5 text-sm font-normal text-zinc-600 transition hover:text-zinc-800 hover:bg-zinc-200;
+  @apply block mx-auto rounded-lg px-2 py-0.5 text-sm font-normal transition;
+  color: var(--color-text-secondary);
+}
+
+.thread-show-more-button:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-subtle);
 }
 
 .project-header-row:hover .project-icon-folder {
@@ -1355,7 +1461,7 @@ onBeforeUnmount(() => {
 }
 
 .thread-row[data-active='true'] {
-  @apply bg-zinc-200;
+  background: var(--color-bg-muted);
 }
 
 .thread-row:hover .thread-pin-button,

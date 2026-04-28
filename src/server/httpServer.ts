@@ -4,12 +4,14 @@ import express, { type Express } from 'express'
 import compression from 'compression'
 import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
 import { createAuthMiddleware } from './authMiddleware.js'
+import type { VoiceInputFallbackConfig } from './transcriptionService.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
 
 export type ServerOptions = {
   password?: string
+  voiceInputFallback?: VoiceInputFallbackConfig
 }
 
 export type ServerInstance = {
@@ -19,7 +21,13 @@ export type ServerInstance = {
 
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
-  const bridge = createCodexBridgeMiddleware()
+  const bridge = createCodexBridgeMiddleware({
+    voiceInputFallback: options.voiceInputFallback ?? {
+      provider: 'openai',
+      enabled: false,
+      model: 'gpt-4o-mini-transcribe',
+    },
+  })
 
   // Enable gzip/br compression by default, except SSE streams.
   app.use(compression({

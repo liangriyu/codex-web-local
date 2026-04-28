@@ -1,0 +1,5 @@
+{"type":"session_start","sessionId":"session-apply-patch","threadId":"thread-file-change-1","createdAt":"2026-04-05T01:00:00.000Z"}
+{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-05T01:00:01.000Z","item":{"type":"custom_tool_call","name":"apply_patch","arguments":"*** Begin Patch\n*** Update File: src/server/codexAppServerBridge.ts\n@@\n-  return middleware\n+  return middleware\n*** End Patch"}}
+{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-05T01:00:02.000Z","item":{"type":"assistant_message","text":"已更新桥接"}}
+{"timestamp":"2026-04-05T01:05:01.000Z","type":"response_item","turn_id":"turn-2","payload":{"type":"custom_tool_call","call_id":"call-apply-patch-2","name":"apply_patch","input":"*** Begin Patch\n*** Delete File: docs/plans/obsolete.md\n*** End Patch"}}
+{"type":"response_item","turnId":"turn-2","createdAt":"2026-04-05T01:05:02.000Z","item":{"type":"assistant_message","text":"已清理旧文档"}}

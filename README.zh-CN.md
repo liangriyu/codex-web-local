@@ -31,6 +31,8 @@ Options:
   -d, --daemon         后台运行（守护进程模式）
   --password <pass>    设置固定访问密码
   --no-password        关闭密码保护
+  --https-cert <path>  HTTPS 证书路径（PEM）
+  --https-key <path>   HTTPS 私钥路径（PEM）
   -h, --help           显示帮助
 ```
 
@@ -59,6 +61,13 @@ codex-web-local --host 0.0.0.0
 
 # Tailscale 场景 + 后台运行
 codex-web-local --host "$(tailscale ip -4)" --port 3000 --daemon
+
+# 启用 HTTPS
+codex-web-local \
+  --host 0.0.0.0 \
+  --port 3443 \
+  --https-cert ./certs/dev.pem \
+  --https-key ./certs/dev-key.pem
 ```
 
 ### 开发命令（Vite）
@@ -82,9 +91,39 @@ npm run dev -- --host 0.0.0.0 --daemon
   - 当前 git 分支
   - context window 用量圆环（hover 显示详细信息）
   - 剩余额度悬浮卡片
+- 多账号档案池：
+  - Web/移动端可保存并展示多个账号档案
+  - 已入池账号切换无需再次走 OAuth 回调
+  - 切换后目标档案成为当前 Codex 活跃账号，原活跃账号回到档案池
+  - 线程选择、滚动位置、context 用量按账号分桶恢复
+- 输入器已支持语音输入：
+  - 浏览器原生语音识别仍是主通道
+  - 不支持原生识别时，只有服务端显式开启语音 fallback 才会展示录音入口
+  - 转写文本只会回填到输入框，不会自动发送
 - context 悬浮卡片支持手动“立即压缩”（调用 `thread/compact/start`）。
 - 左侧线程列表以 `name` 作为主标题，`preview` 通过 tooltip 展示，不再在 hover 时行内展开。
 - AI 响应期间仍可继续输入；点击发送后会进入等待队列，当前轮结束后自动发送。
+
+## 多账号说明
+
+- 新账号首次入池仍需已有授权来源的 `chatgptAuthTokens`，本项目不提供“零授权直接入池”。
+- 账号池能力通过 host 侧私有 RPC 扩展实现，不修改 upstream app-server 协议。
+
+## 语音输入说明
+
+- 语音功能不会修改线程消息协议，只会把识别结果写回输入框草稿。
+- 当前版本仍未恢复本地离线 STT；回退链路是 `codex-web-local` bridge 私有 RPC 转到服务端语音 provider。
+- 当前支持的 provider：
+  - `openai`：`gpt-4o-mini-transcribe`
+  - `zhipu`：`glm-asr-2512`
+- 通过 `CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER=openai|zhipu` 选择当前 provider。
+- OpenAI fallback 需要同时设置：
+  - `OPENAI_API_KEY`
+  - `CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED=1`
+- 智谱 fallback 需要同时设置：
+  - `ZHIPU_API_KEY`
+  - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
+- `iPhone` 或局域网浏览器使用录音回退时，仍建议通过 HTTPS 访问。
 
 ## 守护进程说明
 

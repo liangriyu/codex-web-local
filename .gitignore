@@ -1,4 +1,6 @@
 node_modules/
+.worktrees/
+tmp/
 dist/
 dist-cli/
 *.tsbuildinfo
@@ -9,3 +11,5 @@ PROJECT_SPEC.md
 .idea/
 .vscode/
 .codex/
+.playwright/
+.playwright-cli/

@@ -5,6 +5,8 @@
 
 ## 契约资产
 - 说明文档（中文）：[APP_SERVER_DOCUMENTATION.zh-CN.md](./APP_SERVER_DOCUMENTATION.zh-CN.md)
+- Web Local 私有 RPC：[WEB_LOCAL_PRIVATE_RPC.zh-CN.md](./WEB_LOCAL_PRIVATE_RPC.zh-CN.md)
+  - 当前覆盖语音 fallback 与账号档案池扩展能力
 - schema 产物目录：`documentation/app-server-schemas/`
   - JSON: `documentation/app-server-schemas/json/`
   - TypeScript: `documentation/app-server-schemas/typescript/`
@@ -34,3 +36,9 @@
 2. 校验 `src/api/appServerDtos.ts` 的类型引用是否仍然匹配。
 3. 若涉及路径变化，全文搜索并修复旧路径引用。
 4. 执行 `npm run build`，确保契约变更未破坏构建。
+
+## 私有扩展说明
+
+- `codex-web-local` 可在 bridge 层实现私有 RPC 扩展。
+- 私有 RPC 应记录在本目录，但不得误写入 `documentation/app-server-schemas/`。
+- 只有当私有能力准备上游化时，才需要进入正式 schema 流程。

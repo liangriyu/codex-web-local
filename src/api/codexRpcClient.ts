@@ -35,8 +35,52 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
+async function parseJsonPayload(response: Response): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    return null
+  }
+}
+
+function assertHttpOk(
+  response: Response,
+  payload: unknown,
+  context: { method: string; fallbackMessage: string },
+): void {
+  if (response.ok) {
+    return
+  }
+
+  throw new CodexApiError(
+    extractErrorMessage(payload, context.fallbackMessage),
+    {
+      code: 'http_error',
+      method: context.method,
+      status: response.status,
+    },
+  )
+}
+
+async function fetchJsonPayload(
+  input: RequestInfo | URL,
+  context: { method: string; fallbackMessage: (status: number) => string },
+  init?: RequestInit,
+): Promise<unknown> {
+  const response = await fetch(input, init)
+  const payload = await parseJsonPayload(response)
+  assertHttpOk(response, payload, {
+    method: context.method,
+    fallbackMessage: context.fallbackMessage(response.status),
+  })
+  return payload
+}
+
 export async function rpcCall<T>(method: string, params?: unknown, options: RpcCallOptions = {}): Promise<T> {
-  const body: RpcRequestBody = { method, params: params ?? null }
+  const body: RpcRequestBody = { method }
+  if (params !== undefined) {
+    body.params = params
+  }
 
   let response: Response
   try {
@@ -194,47 +238,154 @@ export async function respondServerRequest(body: ServerRequestReplyBody): Promis
     )
   }
 
-  let payload: unknown = null
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
-  }
-
-  if (!response.ok) {
-    throw new CodexApiError(
-      extractErrorMessage(payload, `Server request reply failed with HTTP ${response.status}`),
-      {
-        code: 'http_error',
-        method: 'server-requests/respond',
-        status: response.status,
-      },
-    )
-  }
+  const payload = await parseJsonPayload(response)
+  assertHttpOk(response, payload, {
+    method: 'server-requests/respond',
+    fallbackMessage: `Server request reply failed with HTTP ${response.status}`,
+  })
 }
 
 export async function fetchPendingServerRequests(): Promise<unknown[]> {
-  const response = await fetch('/codex-api/server-requests/pending')
-
-  let payload: unknown = null
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
-  }
-
-  if (!response.ok) {
-    throw new CodexApiError(
-      extractErrorMessage(payload, `Pending server requests failed with HTTP ${response.status}`),
-      {
-        code: 'http_error',
-        method: 'server-requests/pending',
-        status: response.status,
-      },
-    )
-  }
+  const payload = await fetchJsonPayload(
+    '/codex-api/server-requests/pending',
+    {
+      method: 'server-requests/pending',
+      fallbackMessage: (status) => `Pending server requests failed with HTTP ${status}`,
+    },
+  )
 
   const record = asRecord(payload)
   const data = record?.data
   return Array.isArray(data) ? data : []
+}
+
+export async function fetchPersistedServerRequests(): Promise<unknown[]> {
+  const payload = await fetchJsonPayload(
+    '/codex-api/server-requests/persisted',
+    {
+      method: 'server-requests/persisted',
+      fallbackMessage: (status) => `Persisted server requests failed with HTTP ${status}`,
+    },
+  )
+
+  const record = asRecord(payload)
+  const data = record?.data
+  return Array.isArray(data) ? data : []
+}
+
+export async function fetchSharedSessionSnapshots(): Promise<unknown[]> {
+  const payload = await fetchJsonPayload(
+    '/codex-api/shared-sessions',
+    {
+      method: 'shared-sessions/list',
+      fallbackMessage: (status) => `Shared session snapshots failed with HTTP ${status}`,
+    },
+  )
+
+  const record = asRecord(payload)
+  const data = record?.data
+  return Array.isArray(data) ? data : []
+}
+
+export async function fetchSharedSessionSnapshot(sessionId: string): Promise<unknown | null> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return null
+  }
+
+  const payload = await fetchJsonPayload(
+    `/codex-api/shared-sessions/${encodeURIComponent(normalizedSessionId)}`,
+    {
+      method: 'shared-sessions/read',
+      fallbackMessage: (status) => `Shared session ${normalizedSessionId} failed with HTTP ${status}`,
+    },
+  )
+
+  const record = asRecord(payload)
+  return record?.data ?? null
+}
+
+export async function fetchThreadFileChangesFallback(
+  threadId: string,
+  options: RpcCallOptions = {},
+): Promise<unknown | null> {
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) {
+    return null
+  }
+
+  const query = new URLSearchParams({
+    threadId: normalizedThreadId,
+  })
+
+  let response: Response
+  try {
+    response = await fetch(`/codex-api/thread-file-changes/fallback?${query.toString()}`, {
+      signal: options.signal,
+    })
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error
+    }
+    throw new CodexApiError(
+      error instanceof Error ? error.message : `Thread file changes fallback ${normalizedThreadId} failed before request was sent`,
+      {
+        code: 'network_error',
+        method: 'thread-file-changes/fallback',
+      },
+    )
+  }
+
+  const payload = await parseJsonPayload(response)
+  assertHttpOk(response, payload, {
+    method: 'thread-file-changes/fallback',
+    fallbackMessage: `Thread file changes fallback ${normalizedThreadId} failed with HTTP ${response.status}`,
+  })
+
+  const record = asRecord(payload)
+  return record?.data ?? null
+}
+
+export async function fetchWorkspaceDiffMode(
+  cwd: string,
+  mode: string,
+  options: { baseBranch?: string | null } = {},
+): Promise<unknown> {
+  const query = new URLSearchParams({
+    cwd,
+    mode,
+  })
+  const baseBranch = options.baseBranch?.trim() ?? ''
+  if (baseBranch) {
+    query.set('baseBranch', baseBranch)
+  }
+  return await fetchJsonPayload(
+    `/codex-api/workspace-diff-mode?${query.toString()}`,
+    {
+      method: 'workspace-diff-mode',
+      fallbackMessage: (status) => `Workspace diff mode failed with HTTP ${status}`,
+    },
+  )
+}
+
+export async function dismissPersistedServerRequests(requestIds: number[]): Promise<number[]> {
+  const response = await fetch('/codex-api/server-requests/persisted/dismiss', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ requestIds }),
+  })
+
+  const payload = await parseJsonPayload(response)
+  assertHttpOk(response, payload, {
+    method: 'server-requests/persisted/dismiss',
+    fallbackMessage: `Dismiss persisted server requests failed with HTTP ${response.status}`,
+  })
+
+  const record = asRecord(payload)
+  const data = record?.data
+  return Array.isArray(data)
+    ? data.filter((value): value is number => typeof value === 'number' && Number.isInteger(value))
+    : []
 }

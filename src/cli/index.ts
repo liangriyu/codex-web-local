@@ -1,8 +1,11 @@
-import { createServer } from 'node:http'
+import { readFileSync } from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { spawn } from 'node:child_process'
 import { Command } from 'commander'
 import { createServer as createApp } from '../server/httpServer.js'
 import { generatePassword } from '../server/password.js'
+import { formatAccessUrl, normalizeCliRuntimeConfig } from './runtimeConfig.js'
 
 const program = new Command()
   .name('codex-web-local')
@@ -12,25 +15,26 @@ const program = new Command()
   .option('-d, --daemon', 'run in background (daemon mode)')
   .option('--password <pass>', 'set a specific password')
   .option('--no-password', 'disable password protection')
+  .option('--https-cert <path>', 'path to the HTTPS certificate (PEM)')
+  .option('--https-key <path>', 'path to the HTTPS private key (PEM)')
   .parse()
 
-const opts = program.opts<{ port: string; host?: string; daemon?: boolean; password: string | boolean }>()
-const port = parseInt(opts.port, 10)
-const host = opts.host
-
-function formatAccessUrl(bindHost: string | undefined, bindPort: number): string {
-  if (!bindHost || bindHost === '0.0.0.0' || bindHost === '::') {
-    return `http://localhost:${String(bindPort)}`
-  }
-  const normalizedHost = bindHost.includes(':') && !bindHost.startsWith('[') ? `[${bindHost}]` : bindHost
-  return `http://${normalizedHost}:${String(bindPort)}`
-}
+const runtimeConfig = normalizeCliRuntimeConfig(program.opts<{
+  port: string
+  host?: string
+  daemon?: boolean
+  password: string | boolean
+  httpsCert?: string
+  httpsKey?: string
+}>())
+const port = runtimeConfig.port
+const host = runtimeConfig.host
 
 let password: string | undefined
-if (opts.password === false) {
+if (runtimeConfig.password === false) {
   password = undefined
-} else if (typeof opts.password === 'string') {
-  password = opts.password
+} else if (typeof runtimeConfig.password === 'string') {
+  password = runtimeConfig.password
 } else {
   password = generatePassword()
 }
@@ -51,7 +55,7 @@ function buildDaemonArgs(): string[] {
   return filtered
 }
 
-if (opts.daemon) {
+if (runtimeConfig.daemon) {
   const child = spawn(process.execPath, buildDaemonArgs(), {
     detached: true,
     stdio: 'ignore',
@@ -67,7 +71,7 @@ if (opts.daemon) {
     'Codex Web Local daemon started.',
     '',
     `  PID:      ${String(child.pid)}`,
-    `  Local:    ${formatAccessUrl(host, port)}`,
+    `  Local:    ${formatAccessUrl(host, port, Boolean(runtimeConfig.https))}`,
   ]
   if (password) {
     lines.push(`  Password: ${password}`)
@@ -77,15 +81,34 @@ if (opts.daemon) {
   process.exit(0)
 }
 
-const { app, dispose } = createApp({ password })
-const server = createServer(app)
+const { app, dispose } = createApp({
+  password,
+  voiceInputFallback: runtimeConfig.voiceInputFallback,
+})
+
+function readHttpsFile(path: string, kind: 'certificate' | 'private key'): Buffer {
+  try {
+    return readFileSync(path)
+  } catch {
+    throw new Error(
+      `Failed to read HTTPS ${kind} file at "${path}". Please verify the path, file permissions, and PEM format.`,
+    )
+  }
+}
+
+const server = runtimeConfig.https
+  ? createHttpsServer({
+      cert: readHttpsFile(runtimeConfig.https.cert, 'certificate'),
+      key: readHttpsFile(runtimeConfig.https.key, 'private key'),
+    }, app)
+  : createHttpServer(app)
 
 server.listen(port, host, () => {
   const lines = [
     '',
     'Codex Web Local is running!',
     '',
-    `  Local:    ${formatAccessUrl(host, port)}`,
+    `  Local:    ${formatAccessUrl(host, port, Boolean(runtimeConfig.https))}`,
   ]
 
   if (password) {

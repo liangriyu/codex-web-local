@@ -78,15 +78,24 @@ const sidebarToggleLabel = computed(() =>
 }
 
 .sidebar-thread-controls-button {
-  @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent text-zinc-600 flex items-center justify-center transition hover:border-zinc-200 hover:bg-zinc-50;
+  @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent flex items-center justify-center transition;
+  color: var(--color-text-secondary);
 }
 
 .sidebar-thread-controls-button[aria-pressed='true'] {
-  @apply border-emerald-200 bg-emerald-50 text-emerald-700;
+  border-color: var(--color-border-default);
+  background: var(--color-success-soft);
+  color: var(--color-success-text);
 }
 
 .sidebar-thread-controls-button[aria-pressed='false'] {
-  @apply text-zinc-500;
+  color: var(--color-text-muted);
+}
+
+.sidebar-thread-controls-button:hover {
+  border-color: var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
 }
 
 .sidebar-thread-controls-icon {

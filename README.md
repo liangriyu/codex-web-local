@@ -31,6 +31,8 @@ Options:
   -d, --daemon         run in background (daemon mode)
   --password <pass>    set a specific password
   --no-password        disable password protection
+  --https-cert <path>  path to the HTTPS certificate (PEM)
+  --https-key <path>   path to the HTTPS private key (PEM)
   -h, --help           display help for command
 ```
 
@@ -59,6 +61,13 @@ codex-web-local --host 0.0.0.0
 
 # Tailscale setup in daemon mode (background)
 codex-web-local --host "$(tailscale ip -4)" --port 3000 --daemon
+
+# Enable HTTPS
+codex-web-local \
+  --host 0.0.0.0 \
+  --port 3443 \
+  --https-cert ./certs/dev.pem \
+  --https-key ./certs/dev-key.pem
 ```
 
 ### Dev Commands (Vite)
@@ -82,9 +91,40 @@ When started with password protection (default), the server prints the password 
   - current git branch
   - context window usage ring with detailed hover info
   - remaining quota hover card
+- Multi-account profile pool:
+  - web/mobile can save and list multiple account profiles
+  - switching to an already pooled profile does not require an OAuth callback
+  - after switching, the target profile becomes the active Codex account; the previous one returns to the pool
+  - thread selection, scroll state, and context usage are restored per active profile
+- Composer now supports voice input:
+  - browsers with native speech recognition can fill transcripts back into the composer
+  - browsers without native recognition can use a server-side voice fallback only when the server explicitly enables it
+  - transcripts are inserted back into the input box and are not auto-sent
 - Context hover card supports manual compaction via "Compact Now" (calls `thread/compact/start`).
 - Thread list uses `name` as the primary title. `preview` is shown in tooltip, not inline on hover.
 - You can continue typing while the model is still responding. New sends are queued and auto-sent after the current turn finishes.
+
+## Multi-account Notes
+
+- First-time profile enrollment still needs an authorized token source (`chatgptAuthTokens`) from a previously authorized flow.
+- This project does not change upstream app-server protocols; account pooling is implemented as host-side private RPC extensions.
+
+## Voice Input Notes
+
+- Voice input never changes the thread message protocol. It only writes transcripts back into the composer text area.
+- Native browser speech recognition remains the primary path.
+- Local offline STT is still removed; the fallback path is `codex-web-local` private RPC bridged to a server-side voice provider.
+- Supported fallback providers:
+  - `openai`: `gpt-4o-mini-transcribe`
+  - `zhipu`: `glm-asr-2512`
+- Select the provider with `CODEX_WEB_LOCAL_VOICE_INPUT_PROVIDER=openai|zhipu`.
+- OpenAI fallback requires both:
+  - `OPENAI_API_KEY`
+  - `CODEX_WEB_LOCAL_OPENAI_TRANSCRIBE_ENABLED=1`
+- Zhipu fallback requires both:
+  - `ZHIPU_API_KEY`
+  - `CODEX_WEB_LOCAL_ZHIPU_TRANSCRIBE_ENABLED=1`
+- iPhone and LAN browser access should still prefer HTTPS when using browser recording fallback.
 
 ## Daemon Notes
 

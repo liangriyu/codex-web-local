@@ -18,6 +18,11 @@ import SidebarMenuRow from './SidebarMenuRow.vue'
 }
 
 .sidebar-nav-item {
-  @apply text-sm font-normal text-slate-700 hover:bg-slate-200;
+  @apply text-sm font-normal;
+  color: var(--color-text-primary);
+}
+
+.sidebar-nav-item:hover {
+  background: var(--color-bg-subtle);
 }
 </style>

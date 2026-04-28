@@ -1,42 +1,79 @@
 import { computed, ref } from 'vue'
 import {
   archiveThread,
+  addAccountProfile as addAccountProfileRequest,
   compactThreadContext,
+  createAndSwitchWorkspaceBranch,
+  dismissPersistedServerRequests as dismissPersistedServerRequestsRequest,
+  fetchWorkspaceChanges,
+  fetchWorkspaceBranches,
+  fetchWorkspaceDiffSnapshot,
+  fetchWorkspaceGitStatus,
+  fetchLatestReversibleThreadFileChange,
+  fetchWorkspacePushStatus,
   getAvailableModelIds,
   getAccountRateLimitSnapshot,
+  listAccountProfiles as listAccountProfilesRequest,
   getCurrentModelConfig,
   getModelReasoningSupport,
+  getPersistedServerRequests,
+  getSharedSessionSnapshots,
   getThreadConversationData,
   getPendingServerRequests,
   interruptThreadTurn,
+  pushWorkspaceBranch as pushWorkspaceBranchRequest,
   replyToServerRequest,
   getThreadGroups,
   renameThread,
+  reapplyLatestThreadFileChange as reapplyLatestThreadFileChangeRequest,
+  removeAccountProfile as removeAccountProfileRequest,
   resumeThread,
+  switchWorkspaceBranch,
+  switchAccountProfile as switchAccountProfileRequest,
+  startChatgptAccountLogin as startChatgptAccountLoginRequest,
   startThread,
   subscribeCodexNotifications,
   startThreadTurn,
+  undoLatestThreadFileChange as undoLatestThreadFileChangeRequest,
   type RpcNotification,
+  type AddAccountProfileInput,
 } from '../api/codexGateway'
 import { CodexApiError } from '../api/codexErrors'
 import type {
   ComposerSubmitPayload,
   UiRateLimitUsage,
+  UiAccountProfile,
   UiThreadContextUsage,
   ReasoningEffort,
   ChatMode,
   ThreadScrollState,
-  UiLiveOverlay,
-  UiMessage,
-  UiProjectGroup,
+    UiLiveOverlay,
+    UiMessage,
+    UiPersistedServerRequest,
+    UiProjectGroup,
+    UiSharedSessionSnapshot,
   UiServerRequest,
   UiServerRequestReply,
   UiThread,
+  UiThreadFileChangeTimeline,
   UiTurnFileChanges,
+  UiWorkspaceBranchState,
+  UiWorkspaceDiffMode,
+  UiWorkspaceDiffSnapshot,
+  UiWorkspacePushStatus,
+  WorkspaceBranchBlockReason,
+  WorkspaceModel,
 } from '../types/codex'
 import { normalizeTurnDiffToFileChanges } from '../api/normalizers/v2'
 import {
+  mergeTurnFileChangeRecords,
+  resolveThreadFileChangeTimelineUpdate,
+} from '../utils/threadFileChanges'
+import {
   loadAutoRefreshEnabled,
+  isFileChangesDebugEnabled,
+  loadThreadFileChangeTimelineMap,
+  loadWorkspaceBaseBranchMap,
   loadProjectDisplayNames,
   loadProjectOrder,
   loadRateLimitUsage,
@@ -45,6 +82,8 @@ import {
   loadThreadContextUsageMap,
   loadThreadScrollStateMap,
   saveAutoRefreshEnabled,
+  saveThreadFileChangeTimelineMap,
+  saveWorkspaceBaseBranchMap,
   saveProjectDisplayNames,
   saveProjectOrder,
   saveRateLimitUsage,
@@ -78,7 +117,9 @@ import {
   enqueueQueuedMessage,
   type QueuedMessageState,
 } from './desktop-state/queue-utils'
+import { isApprovalRequestMethod } from '../utils/approvalRequestDisplay'
 import {
+  listPersistedServerRequestsForWorkspace as listPersistedServerRequestsForWorkspaceFromMap,
   listSelectedServerRequests,
   removeServerRequestByIdFromMap,
   upsertServerRequestMap,
@@ -143,6 +184,18 @@ const ARCHIVE_RETRY_BASE_DELAY_MS = 1200
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const GLOBAL_SERVER_REQUEST_SCOPE = '__global__'
 const TOKEN_USAGE_DEBUG_ENABLED = true
+const EMPTY_WORKSPACE_DIRTY_SUMMARY = {
+  trackedModified: 0,
+  staged: 0,
+  untracked: 0,
+  conflicted: 0,
+  renamed: 0,
+  deleted: 0,
+}
+const EMPTY_WORKSPACE_DIFF_TOTALS = {
+  additions: 0,
+  deletions: 0,
+}
 const THREAD_LIST_REFRESH_METHODS = new Set([
   'thread/started',
   'thread/name/updated',
@@ -181,6 +234,12 @@ function debugTokenUsageNotification(notification: RpcNotification): void {
   })
 }
 
+function debugFileChangesState(action: string, payload: Record<string, unknown>): void {
+  if (!isFileChangesDebugEnabled()) return
+  if (typeof window === 'undefined') return
+  console.debug(`[file-changes-state] ${action}`, payload)
+}
+
 function isNoRolloutError(error: unknown): error is CodexApiError {
   if (!(error instanceof CodexApiError)) return false
   if (error.status !== 502) return false
@@ -196,7 +255,9 @@ function isResumeNoRolloutError(error: unknown): error is CodexApiError {
 export function useDesktopState() {
   const projectGroups = ref<UiProjectGroup[]>([])
   const sourceGroups = ref<UiProjectGroup[]>([])
-  const selectedThreadId = ref(loadSelectedThreadId())
+  const accountProfiles = ref<UiAccountProfile[]>([])
+  const activeAccountProfileId = ref('')
+  const selectedThreadId = ref(loadSelectedThreadId(activeAccountProfileId.value))
   const persistedMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveReasoningTextByThreadId = ref<Record<string, string>>({})
@@ -207,7 +268,7 @@ export function useDesktopState() {
   const selectedReasoningEffort = ref<ReasoningEffort | ''>('medium')
   const selectedChatMode = ref<ChatMode>('act')
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
-  const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
+  const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap(activeAccountProfileId.value))
   const projectOrder = ref<string[]>(loadProjectOrder())
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
   const loadedVersionByThreadId = ref<Record<string, string>>({})
@@ -218,11 +279,21 @@ export function useDesktopState() {
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
   const activeTurnIdByThreadId = ref<Record<string, string>>({})
   const pendingServerRequestsByThreadId = ref<Record<string, UiServerRequest[]>>({})
-  const latestFileChangesByThreadId = ref<Record<string, UiTurnFileChanges>>({})
+  const persistedServerRequestsByThreadId = ref<Record<string, UiPersistedServerRequest[]>>({})
+  const sharedSessionSnapshots = ref<UiSharedSessionSnapshot[]>([])
+  const threadFileChangesTimelineByThreadId = ref<Record<string, UiThreadFileChangeTimeline>>(loadThreadFileChangeTimelineMap())
+  const latestReversibleTurnByThreadId = ref<Record<string, string>>(Object.fromEntries(
+    Object.entries(threadFileChangesTimelineByThreadId.value)
+      .map(([threadId, timeline]) => [threadId, timeline.latestReversibleTurnId ?? ''])
+      .filter((entry) => entry[1].length > 0),
+  ))
   const queuedMessagesByThreadId = ref<Record<string, QueuedMessageState[]>>({})
-  const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>(loadThreadContextUsageMap())
+  const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>(loadThreadContextUsageMap(activeAccountProfileId.value))
   const rateLimitUsage = ref<UiRateLimitUsage | null>(loadRateLimitUsage())
   const compactingContextByThreadId = ref<Record<string, boolean>>({})
+  const workspaceBranchStateByCwd = ref<Record<string, UiWorkspaceBranchState>>({})
+  const workspaceByCwd = ref<Record<string, WorkspaceModel>>({})
+  const workspaceBaseBranchByCwd = ref<Record<string, string>>(loadWorkspaceBaseBranchMap())
 
   const isLoadingThreads = ref(false)
   const isLoadingMessages = ref(false)
@@ -263,10 +334,74 @@ export function useDesktopState() {
       GLOBAL_SERVER_REQUEST_SCOPE,
     )
   })
-  const selectedThreadFileChanges = computed<UiTurnFileChanges | null>(() => {
+  const selectedThreadPersistedServerRequests = computed<UiPersistedServerRequest[]>(() => {
+    const rows: UiPersistedServerRequest[] = []
+    if (selectedThreadId.value && Array.isArray(persistedServerRequestsByThreadId.value[selectedThreadId.value])) {
+      rows.push(...persistedServerRequestsByThreadId.value[selectedThreadId.value])
+    }
+    if (Array.isArray(persistedServerRequestsByThreadId.value[GLOBAL_SERVER_REQUEST_SCOPE])) {
+      rows.push(...persistedServerRequestsByThreadId.value[GLOBAL_SERVER_REQUEST_SCOPE])
+    }
+    return rows.sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
+  })
+  const selectedWorkspacePersistedServerRequests = computed<UiPersistedServerRequest[]>(() => {
+    return selectedWorkspaceModel.value?.approvals.persisted ?? []
+  })
+  const globalLiveServerRequests = computed<UiServerRequest[]>(() => {
+    return pendingServerRequestsByThreadId.value[GLOBAL_SERVER_REQUEST_SCOPE] ?? []
+  })
+  const liveApprovalThreadIdSet = computed<Set<string>>(() => {
+    const threadIds = new Set<string>()
+    for (const [threadId, requests] of Object.entries(pendingServerRequestsByThreadId.value)) {
+      if (threadId === GLOBAL_SERVER_REQUEST_SCOPE) continue
+      if (!Array.isArray(requests) || requests.length === 0) continue
+      if (requests.some((request) => isApprovalRequestMethod(request.method))) {
+        threadIds.add(threadId)
+      }
+    }
+    return threadIds
+  })
+  const globalPersistedServerRequests = computed<UiPersistedServerRequest[]>(() => {
+    return persistedServerRequestsByThreadId.value[GLOBAL_SERVER_REQUEST_SCOPE] ?? []
+  })
+  const sharedSessionSnapshotBySessionId = computed<Record<string, UiSharedSessionSnapshot>>(() => {
+    const next: Record<string, UiSharedSessionSnapshot> = {}
+    for (const snapshot of sharedSessionSnapshots.value) {
+      if (!snapshot.sessionId) continue
+      next[snapshot.sessionId] = snapshot
+    }
+    return next
+  })
+  const sharedSessionSnapshotByThreadId = computed<Record<string, UiSharedSessionSnapshot>>(() => {
+    const next: Record<string, UiSharedSessionSnapshot> = {}
+    for (const snapshot of sharedSessionSnapshots.value) {
+      const threadId = snapshot.sourceThreadId.trim()
+      if (!threadId || next[threadId]) continue
+      next[threadId] = snapshot
+    }
+    return next
+  })
+  const selectedSharedSessionSnapshot = computed<UiSharedSessionSnapshot | null>(() => {
+    const threadId = selectedThreadId.value.trim()
+    if (!threadId) return null
+    return sharedSessionSnapshotByThreadId.value[threadId]
+      ?? sharedSessionSnapshotBySessionId.value[threadId]
+      ?? null
+  })
+  const selectedThreadFileChangeTimeline = computed<UiThreadFileChangeTimeline | null>(() => {
     const threadId = selectedThreadId.value
     if (!threadId) return null
-    return latestFileChangesByThreadId.value[threadId] ?? null
+    return threadFileChangesTimelineByThreadId.value[threadId] ?? null
+  })
+  const selectedThreadFileChanges = computed<UiTurnFileChanges | null>(() => {
+    const latestRecord = selectedThreadFileChangeTimeline.value?.records.at(-1)
+    if (!latestRecord) return null
+    return {
+      turnId: latestRecord.turnId,
+      files: latestRecord.files,
+      totalAdditions: latestRecord.totalAdditions,
+      totalDeletions: latestRecord.totalDeletions,
+    }
   })
   const selectedThreadContextUsage = computed<UiThreadContextUsage | null>(() => {
     const threadId = selectedThreadId.value
@@ -279,6 +414,39 @@ export function useDesktopState() {
     if (!threadId) return []
     return queuedMessagesByThreadId.value[threadId] ?? []
   })
+  function getWorkspaceModelForCwd(cwd: string): WorkspaceModel | null {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return null
+    const current = workspaceByCwd.value[normalizedCwd]
+    if (current) return current
+    const loadingModel = createWorkspaceModel(normalizedCwd)
+    return {
+      ...loadingModel,
+      branch: {
+        ...loadingModel.branch,
+        isLoading: true,
+      },
+    }
+  }
+
+  function getWorkspaceBranchStateForCwd(cwd: string): UiWorkspaceBranchState | null {
+    const workspace = getWorkspaceModelForCwd(cwd)
+    if (!workspace) return null
+    return workspaceBranchStateFromModel(workspace)
+  }
+
+  const selectedWorkspaceModel = computed<WorkspaceModel | null>(() => {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    return getWorkspaceModelForCwd(cwd)
+  })
+  const selectedWorkspaceBranchState = computed<UiWorkspaceBranchState | null>(() => {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    return getWorkspaceBranchStateForCwd(cwd)
+  })
+  const selectedWorkspaceDiffTotals = computed(() => ({
+    additions: selectedWorkspaceModel.value?.diff.totalAdditions ?? 0,
+    deletions: selectedWorkspaceModel.value?.diff.totalDeletions ?? 0,
+  }))
   const isCompactingSelectedThreadContext = computed<boolean>(() => {
     const threadId = selectedThreadId.value
     if (!threadId) return false
@@ -316,7 +484,7 @@ export function useDesktopState() {
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
     selectedThreadId.value = nextThreadId
-    saveSelectedThreadId(nextThreadId)
+    saveSelectedThreadId(nextThreadId, activeAccountProfileId.value)
     activeReasoningItemId = ''
     shouldAutoScrollOnNextAgentEvent = false
   }
@@ -404,6 +572,728 @@ export function useDesktopState() {
     selectedChatMode.value = mode
   }
 
+  function createWorkspaceBranchState(cwd: string): UiWorkspaceBranchState {
+    return {
+      cwd,
+      isRepo: false,
+      isDirty: false,
+      currentBranch: '',
+      branches: [],
+      dirtySummary: { ...EMPTY_WORKSPACE_DIRTY_SUMMARY },
+      dirtyEntries: [],
+      isLoading: false,
+      isSwitching: false,
+      blockedReasons: [],
+    }
+  }
+
+  function createWorkspacePushState(): WorkspaceModel['push'] {
+    return {
+      status: null,
+      isLoading: false,
+      isPushing: false,
+      lastResult: null,
+      lastError: null,
+    }
+  }
+
+  function createWorkspaceModel(cwd: string): WorkspaceModel {
+    return {
+      cwd,
+      branch: {
+        isRepo: false,
+        currentBranch: '',
+        branches: [],
+        baseBranch: workspaceBaseBranchByCwd.value[cwd] ?? null,
+        isDetachedHead: false,
+        isLoading: false,
+        isSwitching: false,
+      },
+      guard: {
+        blockedReasons: [],
+        livePendingRequestCount: 0,
+        persistedPendingRequestCount: 0,
+        queuedMessageCount: 0,
+        inProgressThreadCount: 0,
+      },
+      gitStatus: {
+        isDirty: false,
+        summary: { ...EMPTY_WORKSPACE_DIRTY_SUMMARY },
+        entries: [],
+        fetchedAt: null,
+      },
+      push: createWorkspacePushState(),
+      diff: {
+        selectedMode: 'unstaged',
+        snapshots: {},
+        isLoadingByMode: {},
+        totalAdditions: EMPTY_WORKSPACE_DIFF_TOTALS.additions,
+        totalDeletions: EMPTY_WORKSPACE_DIFF_TOTALS.deletions,
+      },
+      approvals: {
+        live: [],
+        persisted: [],
+      },
+      ui: {
+        selectedPath: null,
+        expandedPaths: [],
+        lastOpenedAt: null,
+      },
+    }
+  }
+
+  function upsertWorkspaceModel(cwd: string, updater: (current: WorkspaceModel) => WorkspaceModel): void {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return
+    const current = workspaceByCwd.value[normalizedCwd] ?? createWorkspaceModel(normalizedCwd)
+    workspaceByCwd.value = {
+      ...workspaceByCwd.value,
+      [normalizedCwd]: updater(current),
+    }
+  }
+
+  function workspaceBranchStateFromModel(workspace: WorkspaceModel): UiWorkspaceBranchState {
+    return {
+      cwd: workspace.cwd,
+      isRepo: workspace.branch.isRepo,
+      isDirty: workspace.gitStatus.isDirty,
+      currentBranch: workspace.branch.currentBranch,
+      branches: workspace.branch.branches,
+      dirtySummary: workspace.gitStatus.summary ?? { ...EMPTY_WORKSPACE_DIRTY_SUMMARY },
+      dirtyEntries: workspace.gitStatus.entries,
+      isLoading: workspace.branch.isLoading,
+      isSwitching: workspace.branch.isSwitching,
+      blockedReasons: workspace.guard.blockedReasons,
+    }
+  }
+
+  function upsertWorkspaceBranchState(cwd: string, updater: (current: UiWorkspaceBranchState) => UiWorkspaceBranchState): void {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return
+    const current = workspaceBranchStateByCwd.value[normalizedCwd] ?? createWorkspaceBranchState(normalizedCwd)
+    workspaceBranchStateByCwd.value = {
+      ...workspaceBranchStateByCwd.value,
+      [normalizedCwd]: updater(current),
+    }
+  }
+
+  function hasInProgressThreadsInWorkspace(cwd: string): boolean {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return false
+    return allThreads.value.some((thread) =>
+      thread.cwd.trim() === normalizedCwd && inProgressById.value[thread.id] === true,
+    )
+  }
+
+  function hasQueuedMessagesInWorkspace(cwd: string): boolean {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return false
+    return allThreads.value.some((thread) => {
+      if (thread.cwd.trim() !== normalizedCwd) return false
+      const queued = queuedMessagesByThreadId.value[thread.id] ?? []
+      return queued.length > 0
+    })
+  }
+
+  function hasPendingServerRequestsInWorkspace(cwd: string): boolean {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return false
+    return allThreads.value.some((thread) => {
+      if (thread.cwd.trim() !== normalizedCwd) return false
+      const requests = pendingServerRequestsByThreadId.value[thread.id] ?? []
+      return requests.length > 0
+    })
+  }
+
+  function countLiveServerRequestsInWorkspace(cwd: string): number {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return 0
+    let count = 0
+    for (const thread of allThreads.value) {
+      if (thread.cwd.trim() !== normalizedCwd) continue
+      count += pendingServerRequestsByThreadId.value[thread.id]?.length ?? 0
+    }
+    return count
+  }
+
+  function getThreadCwdById(threadId: string): string {
+    if (!threadId) return ''
+    const thread = allThreads.value.find((row) => row.id === threadId)
+    return thread?.cwd?.trim() ?? ''
+  }
+
+  function hasPersistedServerRequestsInWorkspace(cwd: string): boolean {
+    return listPersistedServerRequestsForWorkspace(cwd).length > 0
+  }
+
+  function listPersistedServerRequestsForWorkspace(cwd: string): UiPersistedServerRequest[] {
+    return listPersistedServerRequestsForWorkspaceFromMap(
+      persistedServerRequestsByThreadId.value,
+      cwd,
+      getThreadCwdById,
+    )
+  }
+
+  function listLiveServerRequestsForWorkspace(cwd: string): UiServerRequest[] {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return []
+    const matches: UiServerRequest[] = []
+    for (const [threadId, requests] of Object.entries(pendingServerRequestsByThreadId.value)) {
+      if (threadId === GLOBAL_SERVER_REQUEST_SCOPE || requests.length === 0) continue
+      const mappedCwd = getThreadCwdById(threadId)
+      if (mappedCwd === normalizedCwd) {
+        matches.push(...requests)
+      }
+    }
+    return matches.sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
+  }
+
+  function computeWorkspaceBranchBlockedReasons(
+    cwd: string,
+    state: Pick<UiWorkspaceBranchState, 'isRepo' | 'isDirty'>,
+  ): WorkspaceBranchBlockReason[] {
+    const reasons: WorkspaceBranchBlockReason[] = []
+    if (!state.isRepo) reasons.push('not_repo')
+    if (state.isDirty) reasons.push('workspace_dirty')
+    if (hasInProgressThreadsInWorkspace(cwd)) reasons.push('thread_in_progress')
+    if (hasQueuedMessagesInWorkspace(cwd)) reasons.push('queued_messages')
+    if (hasPendingServerRequestsInWorkspace(cwd)) reasons.push('pending_server_requests')
+    if (hasPersistedServerRequestsInWorkspace(cwd)) reasons.push('persisted_server_requests')
+    return reasons
+  }
+
+  function computeWorkspaceGuardState(cwd: string, state: Pick<UiWorkspaceBranchState, 'isRepo' | 'isDirty'>) {
+    const livePendingRequestCount = countLiveServerRequestsInWorkspace(cwd)
+    const persistedPendingRequestCount = listPersistedServerRequestsForWorkspace(cwd).length
+    const queuedMessageCount = allThreads.value.reduce((total, thread) => {
+      if (thread.cwd.trim() !== cwd.trim()) return total
+      return total + (queuedMessagesByThreadId.value[thread.id]?.length ?? 0)
+    }, 0)
+    const inProgressThreadCount = allThreads.value.reduce((total, thread) => {
+      if (thread.cwd.trim() !== cwd.trim()) return total
+      return total + (inProgressById.value[thread.id] === true ? 1 : 0)
+    }, 0)
+    return {
+      blockedReasons: computeWorkspaceBranchBlockedReasons(cwd, state),
+      livePendingRequestCount,
+      persistedPendingRequestCount,
+      queuedMessageCount,
+      inProgressThreadCount,
+    }
+  }
+
+  function syncWorkspaceModelForCwd(cwd: string): void {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return
+    const branchState = workspaceBranchStateByCwd.value[normalizedCwd] ?? createWorkspaceBranchState(normalizedCwd)
+    const guard = computeWorkspaceGuardState(normalizedCwd, branchState)
+    const liveRequests = listLiveServerRequestsForWorkspace(normalizedCwd)
+    const persistedRequests = listPersistedServerRequestsForWorkspace(normalizedCwd)
+
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      branch: {
+        ...current.branch,
+        isRepo: branchState.isRepo,
+        currentBranch: branchState.currentBranch,
+        branches: branchState.branches,
+        baseBranch: workspaceBaseBranchByCwd.value[normalizedCwd] ?? current.branch.baseBranch,
+        isLoading: branchState.isLoading,
+        isSwitching: branchState.isSwitching,
+      },
+      guard,
+      gitStatus: {
+        isDirty: branchState.isDirty,
+        summary: branchState.dirtySummary,
+        entries: branchState.dirtyEntries,
+        fetchedAt: new Date().toISOString(),
+      },
+      approvals: {
+        live: liveRequests,
+        persisted: persistedRequests,
+      },
+    }))
+  }
+
+  function syncWorkspaceModelsForKnownCwds(): void {
+    const cwdSet = new Set<string>(Object.keys(workspaceByCwd.value))
+    for (const cwd of Object.keys(workspaceBranchStateByCwd.value)) {
+      if (cwd.trim()) cwdSet.add(cwd.trim())
+    }
+    for (const thread of allThreads.value) {
+      const cwd = thread.cwd.trim()
+      if (cwd) cwdSet.add(cwd)
+    }
+    for (const cwd of cwdSet) {
+      syncWorkspaceModelForCwd(cwd)
+    }
+  }
+
+  function syncWorkspaceBranchBlockedReasons(): void {
+    const cwdSet = new Set<string>(Object.keys(workspaceBranchStateByCwd.value))
+    for (const thread of allThreads.value) {
+      const cwd = thread.cwd.trim()
+      if (cwd) cwdSet.add(cwd)
+    }
+
+    if (cwdSet.size === 0) return
+
+    const nextStateByCwd: Record<string, UiWorkspaceBranchState> = {
+      ...workspaceBranchStateByCwd.value,
+    }
+    for (const cwd of cwdSet) {
+      const current = nextStateByCwd[cwd] ?? createWorkspaceBranchState(cwd)
+      nextStateByCwd[cwd] = {
+        ...current,
+        blockedReasons: computeWorkspaceBranchBlockedReasons(cwd, current),
+      }
+    }
+    workspaceBranchStateByCwd.value = nextStateByCwd
+    syncWorkspaceModelsForKnownCwds()
+  }
+
+  async function refreshWorkspaceBranchState(
+    cwd: string,
+    options: { includeBranches?: boolean; silent?: boolean } = {},
+  ): Promise<UiWorkspaceBranchState | null> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return null
+
+    const includeBranches = options.includeBranches ?? true
+    const silent = options.silent ?? false
+    upsertWorkspaceBranchState(normalizedCwd, (current) => ({
+      ...current,
+      isLoading: true,
+    }))
+
+    try {
+      const [status, branchList] = await Promise.all([
+        fetchWorkspaceGitStatus(normalizedCwd),
+        includeBranches ? fetchWorkspaceBranches(normalizedCwd) : Promise.resolve(null),
+      ])
+
+      const nextState: UiWorkspaceBranchState = {
+        cwd: normalizedCwd,
+        isRepo: status?.isRepo === true,
+        isDirty: status?.isDirty === true,
+        currentBranch: status?.currentBranch ?? branchList?.currentBranch ?? '',
+        branches: branchList?.branches ?? (workspaceBranchStateByCwd.value[normalizedCwd]?.branches ?? []),
+        dirtySummary: status?.dirtySummary ?? { ...EMPTY_WORKSPACE_DIRTY_SUMMARY },
+        dirtyEntries: status?.dirtyEntries ?? [],
+        isLoading: false,
+        isSwitching: workspaceBranchStateByCwd.value[normalizedCwd]?.isSwitching === true,
+        blockedReasons: [],
+      }
+      nextState.blockedReasons = computeWorkspaceBranchBlockedReasons(normalizedCwd, nextState)
+      upsertWorkspaceBranchState(normalizedCwd, () => nextState)
+      syncWorkspaceModelForCwd(normalizedCwd)
+      return nextState
+    } catch (unknownError) {
+      upsertWorkspaceBranchState(normalizedCwd, (current) => ({
+        ...current,
+        isLoading: false,
+      }))
+      if (!silent) {
+        error.value = unknownError instanceof Error ? unknownError.message : 'Failed to load workspace branches'
+      }
+      return null
+    }
+  }
+
+  async function refreshSelectedWorkspaceBranchState(
+    options: { includeBranches?: boolean; silent?: boolean } = {},
+  ): Promise<UiWorkspaceBranchState | null> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return null
+    return refreshWorkspaceBranchState(cwd, options)
+  }
+
+  async function refreshWorkspaceBranchStateForCwd(
+    cwd: string,
+    options: { includeBranches?: boolean; silent?: boolean } = {},
+  ): Promise<UiWorkspaceBranchState | null> {
+    return refreshWorkspaceBranchState(cwd, options)
+  }
+
+  async function refreshWorkspacePushStatus(
+    cwd: string,
+    options: { silent?: boolean } = {},
+  ): Promise<UiWorkspacePushStatus | null> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return null
+
+    const silent = options.silent ?? false
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      push: {
+        ...current.push,
+        isLoading: true,
+      },
+    }))
+
+    try {
+      const status = await fetchWorkspacePushStatus(normalizedCwd)
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          status,
+          isLoading: false,
+          lastError: null,
+        },
+      }))
+      return status
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Failed to load workspace push status'
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          isLoading: false,
+          lastError: message,
+        },
+      }))
+      if (!silent) {
+        error.value = message
+      }
+      return null
+    }
+  }
+
+  async function refreshSelectedWorkspacePushStatus(
+    options: { silent?: boolean } = {},
+  ): Promise<UiWorkspacePushStatus | null> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return null
+    return refreshWorkspacePushStatus(cwd, options)
+  }
+
+  async function refreshWorkspacePushStatusForCwd(
+    cwd: string,
+    options: { silent?: boolean } = {},
+  ): Promise<UiWorkspacePushStatus | null> {
+    return refreshWorkspacePushStatus(cwd, options)
+  }
+
+  async function runWorkspacePushActionForCwd(cwd: string, fallbackMessage: string): Promise<boolean> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return false
+
+    await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      push: {
+        ...current.push,
+        isPushing: true,
+        lastError: null,
+      },
+    }))
+
+    try {
+      const result = await pushWorkspaceBranchRequest(normalizedCwd)
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          lastResult: result,
+          lastError: null,
+        },
+      }))
+      await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+      return true
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : fallbackMessage
+      error.value = message
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          lastError: message,
+        },
+      }))
+      await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+      return false
+    } finally {
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        push: {
+          ...current.push,
+          isPushing: false,
+        },
+      }))
+    }
+  }
+
+  async function pushSelectedWorkspaceBranch(): Promise<boolean> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return false
+    return runWorkspacePushActionForCwd(cwd, '当前工作区暂时不能推送到远端')
+  }
+
+  async function pushWorkspaceBranchForCwd(cwd: string): Promise<boolean> {
+    return runWorkspacePushActionForCwd(cwd, '当前工作区暂时不能推送到远端')
+  }
+
+  async function refreshWorkspaceDiffTotals(cwd: string): Promise<{ additions: number; deletions: number }> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return { ...EMPTY_WORKSPACE_DIFF_TOTALS }
+    try {
+      const changes = await fetchWorkspaceChanges(normalizedCwd)
+      const nextTotals = changes
+        ? {
+            additions: changes.totalAdditions,
+            deletions: changes.totalDeletions,
+          }
+        : { ...EMPTY_WORKSPACE_DIFF_TOTALS }
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        diff: {
+          ...current.diff,
+          totalAdditions: nextTotals.additions,
+          totalDeletions: nextTotals.deletions,
+        },
+      }))
+      return nextTotals
+    } catch {
+      const emptyTotals = { ...EMPTY_WORKSPACE_DIFF_TOTALS }
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        diff: {
+          ...current.diff,
+          totalAdditions: emptyTotals.additions,
+          totalDeletions: emptyTotals.deletions,
+        },
+      }))
+      return emptyTotals
+    }
+  }
+
+  async function refreshSelectedWorkspaceDiffTotals(): Promise<{ additions: number; deletions: number }> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return { ...EMPTY_WORKSPACE_DIFF_TOTALS }
+    return refreshWorkspaceDiffTotals(cwd)
+  }
+
+  function setWorkspaceDiffMode(cwd: string, mode: UiWorkspaceDiffMode): void {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      diff: {
+        ...current.diff,
+        selectedMode: mode,
+      },
+      ui: {
+        ...current.ui,
+        lastOpenedAt: new Date().toISOString(),
+      },
+    }))
+  }
+
+  function setWorkspaceBaseBranch(cwd: string, branch: string | null): void {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return
+    const normalizedBranch = branch?.trim() ?? ''
+
+    if (normalizedBranch) {
+      workspaceBaseBranchByCwd.value = {
+        ...workspaceBaseBranchByCwd.value,
+        [normalizedCwd]: normalizedBranch,
+      }
+    } else if (workspaceBaseBranchByCwd.value[normalizedCwd]) {
+      workspaceBaseBranchByCwd.value = omitKey(workspaceBaseBranchByCwd.value, normalizedCwd)
+    }
+    saveWorkspaceBaseBranchMap(workspaceBaseBranchByCwd.value)
+
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      branch: {
+        ...current.branch,
+        baseBranch: normalizedBranch || null,
+      },
+    }))
+  }
+
+  async function fetchWorkspaceDiffSnapshotForMode(
+    cwd: string,
+    mode: UiWorkspaceDiffMode,
+  ): Promise<UiWorkspaceDiffSnapshot> {
+    const normalizedCwd = cwd.trim()
+    const fallbackSnapshot: UiWorkspaceDiffSnapshot = {
+      mode,
+      cwd: normalizedCwd,
+      label: '',
+      baseRef: null,
+      targetRef: null,
+      warning: null,
+      files: [],
+      totalAdditions: 0,
+      totalDeletions: 0,
+    }
+    if (!normalizedCwd) return fallbackSnapshot
+
+    upsertWorkspaceModel(normalizedCwd, (current) => ({
+      ...current,
+      diff: {
+        ...current.diff,
+        isLoadingByMode: {
+          ...current.diff.isLoadingByMode,
+          [mode]: true,
+        },
+      },
+    }))
+
+    try {
+      const baseBranch =
+        mode === 'branch'
+          ? (workspaceBaseBranchByCwd.value[normalizedCwd] ?? workspaceByCwd.value[normalizedCwd]?.branch.baseBranch ?? null)
+          : null
+      const snapshot = await fetchWorkspaceDiffSnapshot(normalizedCwd, mode, { baseBranch })
+      const normalizedSnapshot = snapshot ?? fallbackSnapshot
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        diff: {
+          ...current.diff,
+          selectedMode: normalizedSnapshot.mode,
+          snapshots: {
+            ...current.diff.snapshots,
+            [normalizedSnapshot.mode]: normalizedSnapshot,
+          },
+          isLoadingByMode: {
+            ...current.diff.isLoadingByMode,
+            [mode]: false,
+          },
+        },
+        ui: {
+          ...current.ui,
+          lastOpenedAt: new Date().toISOString(),
+        },
+      }))
+      return normalizedSnapshot
+    } catch {
+      upsertWorkspaceModel(normalizedCwd, (current) => ({
+        ...current,
+        diff: {
+          ...current.diff,
+          isLoadingByMode: {
+            ...current.diff.isLoadingByMode,
+            [mode]: false,
+          },
+        },
+      }))
+      return fallbackSnapshot
+    }
+  }
+
+  async function openPreferredWorkspaceDiffSnapshot(cwd: string): Promise<UiWorkspaceDiffSnapshot | null> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return null
+    const preferredMode = workspaceByCwd.value[normalizedCwd]?.diff.selectedMode ?? 'unstaged'
+    if (preferredMode !== 'unstaged') {
+      return fetchWorkspaceDiffSnapshotForMode(normalizedCwd, preferredMode)
+    }
+
+    const unstagedSnapshot = await fetchWorkspaceDiffSnapshotForMode(normalizedCwd, 'unstaged')
+    if (unstagedSnapshot.files.length > 0 || unstagedSnapshot.warning) {
+      return unstagedSnapshot
+    }
+
+    const stagedSnapshot = await fetchWorkspaceDiffSnapshotForMode(normalizedCwd, 'staged')
+    if (stagedSnapshot.files.length > 0) {
+      return stagedSnapshot
+    }
+
+    return unstagedSnapshot
+  }
+
+  async function runWorkspaceBranchActionForCwd(
+    cwd: string,
+    action: (cwd: string) => Promise<void>,
+    fallbackMessage: string,
+  ): Promise<boolean> {
+    const normalizedCwd = cwd.trim()
+    if (!normalizedCwd) return false
+
+    const currentState = await refreshWorkspaceBranchState(normalizedCwd, { includeBranches: true, silent: true })
+    if (!currentState) return false
+    if (currentState.blockedReasons.length > 0) {
+      error.value = fallbackMessage
+      return false
+    }
+
+    upsertWorkspaceBranchState(normalizedCwd, (current) => ({
+      ...current,
+      isSwitching: true,
+    }))
+
+    try {
+      await action(normalizedCwd)
+      await loadThreads()
+      if (selectedThreadId.value) {
+        await loadMessages(selectedThreadId.value, { silent: true })
+      }
+      await refreshWorkspaceBranchState(normalizedCwd, { includeBranches: true, silent: true })
+      await refreshWorkspacePushStatus(normalizedCwd, { silent: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : fallbackMessage
+      return false
+    } finally {
+      upsertWorkspaceBranchState(normalizedCwd, (current) => ({
+        ...current,
+        isSwitching: false,
+        blockedReasons: computeWorkspaceBranchBlockedReasons(normalizedCwd, current),
+      }))
+    }
+  }
+
+  async function runSelectedWorkspaceBranchAction(
+    action: (cwd: string) => Promise<void>,
+    fallbackMessage: string,
+  ): Promise<boolean> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    if (!cwd) return false
+    return runWorkspaceBranchActionForCwd(cwd, action, fallbackMessage)
+  }
+
+  async function switchSelectedWorkspaceBranch(targetBranch: string): Promise<boolean> {
+    const normalizedBranch = targetBranch.trim()
+    if (!normalizedBranch) return false
+    return runSelectedWorkspaceBranchAction(
+      (cwd) => switchWorkspaceBranch(cwd, normalizedBranch),
+      '当前工作区暂时不能切换分支',
+    )
+  }
+
+  async function createAndSwitchSelectedWorkspaceBranch(targetBranch: string): Promise<boolean> {
+    const normalizedBranch = targetBranch.trim()
+    if (!normalizedBranch) return false
+    return runSelectedWorkspaceBranchAction(
+      (cwd) => createAndSwitchWorkspaceBranch(cwd, normalizedBranch),
+      '当前工作区暂时不能创建分支',
+    )
+  }
+
+  async function switchWorkspaceBranchForCwd(cwd: string, targetBranch: string): Promise<boolean> {
+    const normalizedBranch = targetBranch.trim()
+    if (!normalizedBranch) return false
+    return runWorkspaceBranchActionForCwd(
+      cwd,
+      (targetCwd) => switchWorkspaceBranch(targetCwd, normalizedBranch),
+      '当前工作区暂时不能切换分支',
+    )
+  }
+
+  async function createAndSwitchWorkspaceBranchForCwd(cwd: string, targetBranch: string): Promise<boolean> {
+    const normalizedBranch = targetBranch.trim()
+    if (!normalizedBranch) return false
+    return runWorkspaceBranchActionForCwd(
+      cwd,
+      (targetCwd) => createAndSwitchWorkspaceBranch(targetCwd, normalizedBranch),
+      '当前工作区暂时不能创建分支',
+    )
+  }
+  
   function buildPendingTurnDetails(): string[] {
     return []
   }
@@ -443,12 +1333,28 @@ export function useDesktopState() {
   }
 
   async function refreshModelPreferences(): Promise<void> {
-    try {
-      const [modelIds, currentConfig] = await Promise.all([
-        getAvailableModelIds(),
-        getCurrentModelConfig(),
-      ])
+    let currentConfig: Awaited<ReturnType<typeof getCurrentModelConfig>> = {
+      model: '',
+      reasoningEffort: '',
+    }
 
+    try {
+      currentConfig = await getCurrentModelConfig()
+      if (!selectedModelId.value && currentConfig.model) {
+        selectedModelId.value = currentConfig.model
+      }
+      if (
+        currentConfig.reasoningEffort &&
+        REASONING_EFFORT_OPTIONS.includes(currentConfig.reasoningEffort)
+      ) {
+        selectedReasoningEffort.value = currentConfig.reasoningEffort
+      }
+    } catch {
+      // Keep chat UI usable even if the current model config is temporarily unavailable.
+    }
+
+    try {
+      const modelIds = await getAvailableModelIds()
       availableModelIds.value = modelIds
 
       const hasSelectedModel = selectedModelId.value.length > 0 && modelIds.includes(selectedModelId.value)
@@ -457,16 +1363,9 @@ export function useDesktopState() {
           selectedModelId.value = currentConfig.model
         } else if (modelIds.length > 0) {
           selectedModelId.value = modelIds[0]
-        } else {
+        } else if (!currentConfig.model) {
           selectedModelId.value = ''
         }
-      }
-
-      if (
-        currentConfig.reasoningEffort &&
-        REASONING_EFFORT_OPTIONS.includes(currentConfig.reasoningEffort)
-      ) {
-        selectedReasoningEffort.value = currentConfig.reasoningEffort
       }
 
       normalizeReasoningEffortForModel(selectedModelId.value)
@@ -487,6 +1386,98 @@ export function useDesktopState() {
       lastRateLimitRefreshAtMs = now
     } catch {
       // Keep existing rate-limit snapshot on transient failures.
+    }
+  }
+
+  function restoreAccountScopedUiState(): void {
+    selectedThreadId.value = loadSelectedThreadId(activeAccountProfileId.value)
+    scrollStateByThreadId.value = loadThreadScrollStateMap(activeAccountProfileId.value)
+    contextUsageByThreadId.value = loadThreadContextUsageMap(activeAccountProfileId.value)
+    activeReasoningItemId = ''
+    shouldAutoScrollOnNextAgentEvent = false
+  }
+
+  async function loadAccountProfiles(): Promise<void> {
+    try {
+      const payload = await listAccountProfilesRequest()
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+    } catch {
+      // Keep current account profile state on transient failures.
+    }
+  }
+
+  async function switchAccountProfile(profileId: string): Promise<boolean> {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId) return false
+
+    try {
+      const payload = await switchAccountProfileRequest(normalizedProfileId)
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+      await refreshRateLimitUsage({ force: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to switch account profile'
+      return false
+    }
+  }
+
+  async function addAccountProfile(profile: AddAccountProfileInput): Promise<boolean> {
+    try {
+      const payload = await addAccountProfileRequest(profile)
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+      await refreshRateLimitUsage({ force: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to add account profile'
+      return false
+    }
+  }
+
+  async function removeAccountProfile(profileId: string): Promise<boolean> {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId) return false
+
+    try {
+      const payload = await removeAccountProfileRequest(normalizedProfileId)
+      accountProfiles.value = payload.profiles
+      const nextActiveProfileId = payload.activeProfileId ?? ''
+      const hasActiveProfileChanged = activeAccountProfileId.value !== nextActiveProfileId
+      activeAccountProfileId.value = nextActiveProfileId
+      if (hasActiveProfileChanged) {
+        restoreAccountScopedUiState()
+      }
+      await refreshRateLimitUsage({ force: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to remove account profile'
+      return false
+    }
+  }
+
+  async function startAccountAlignment(): Promise<string | null> {
+    try {
+      return await startChatgptAccountLoginRequest()
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to start account alignment'
+      return null
     }
   }
 
@@ -511,7 +1502,7 @@ export function useDesktopState() {
     const nextScrollState = pruneThreadStateMap(scrollStateByThreadId.value, activeThreadIds)
     if (nextScrollState !== scrollStateByThreadId.value) {
       scrollStateByThreadId.value = nextScrollState
-      saveThreadScrollStateMap(nextScrollState)
+      saveThreadScrollStateMap(nextScrollState, activeAccountProfileId.value)
     }
     loadedMessagesByThreadId.value = pruneThreadStateMap(loadedMessagesByThreadId.value, activeThreadIds)
     loadedVersionByThreadId.value = pruneThreadStateMap(loadedVersionByThreadId.value, activeThreadIds)
@@ -523,10 +1514,11 @@ export function useDesktopState() {
     turnActivityByThreadId.value = pruneThreadStateMap(turnActivityByThreadId.value, activeThreadIds)
     turnErrorByThreadId.value = pruneThreadStateMap(turnErrorByThreadId.value, activeThreadIds)
     activeTurnIdByThreadId.value = pruneThreadStateMap(activeTurnIdByThreadId.value, activeThreadIds)
-    latestFileChangesByThreadId.value = pruneThreadStateMap(latestFileChangesByThreadId.value, activeThreadIds)
+    threadFileChangesTimelineByThreadId.value = pruneThreadStateMap(threadFileChangesTimelineByThreadId.value, activeThreadIds)
+    saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
     queuedMessagesByThreadId.value = pruneThreadStateMap(queuedMessagesByThreadId.value, activeThreadIds)
     contextUsageByThreadId.value = pruneThreadStateMap(contextUsageByThreadId.value, activeThreadIds)
-    saveThreadContextUsageMap(contextUsageByThreadId.value)
+    saveThreadContextUsageMap(contextUsageByThreadId.value, activeAccountProfileId.value)
     compactingContextByThreadId.value = pruneThreadStateMap(compactingContextByThreadId.value, activeThreadIds)
     eventUnreadByThreadId.value = pruneThreadStateMap(eventUnreadByThreadId.value, activeThreadIds)
     inProgressById.value = pruneThreadStateMap(inProgressById.value, activeThreadIds)
@@ -535,6 +1527,7 @@ export function useDesktopState() {
       activeThreadIds,
       GLOBAL_SERVER_REQUEST_SCOPE,
     )
+    syncWorkspaceBranchBlockedReasons()
   }
 
   function markThreadAsRead(threadId: string): void {
@@ -673,7 +1666,7 @@ export function useDesktopState() {
       ...scrollStateByThreadId.value,
       [threadId]: normalizedState,
     }
-    saveThreadScrollStateMap(scrollStateByThreadId.value)
+    saveThreadScrollStateMap(scrollStateByThreadId.value, activeAccountProfileId.value)
   }
 
   function setPersistedMessagesForThread(threadId: string, nextMessages: UiMessage[]): void {
@@ -692,6 +1685,151 @@ export function useDesktopState() {
       ...liveAgentMessagesByThreadId.value,
       [threadId]: nextMessages,
     }
+  }
+
+  function syncLatestReversibleTurnForThread(threadId: string): void {
+    const latestTurnId = threadFileChangesTimelineByThreadId.value[threadId]?.latestReversibleTurnId ?? ''
+    if (!latestTurnId) {
+      if (!(threadId in latestReversibleTurnByThreadId.value)) return
+      latestReversibleTurnByThreadId.value = omitKey(latestReversibleTurnByThreadId.value, threadId)
+      return
+    }
+    if (latestReversibleTurnByThreadId.value[threadId] === latestTurnId) return
+    latestReversibleTurnByThreadId.value = {
+      ...latestReversibleTurnByThreadId.value,
+      [threadId]: latestTurnId,
+    }
+  }
+
+  function setThreadFileChangeTimelineForThread(threadId: string, timeline: UiThreadFileChangeTimeline | null): void {
+    if (!threadId) return
+    if (!timeline || timeline.records.length === 0) {
+      threadFileChangesTimelineByThreadId.value = omitKey(threadFileChangesTimelineByThreadId.value, threadId)
+      syncLatestReversibleTurnForThread(threadId)
+      saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
+      return
+    }
+
+    const normalizedTimeline: UiThreadFileChangeTimeline = {
+      threadId,
+      records: timeline.records,
+      latestReversibleTurnId: timeline.latestReversibleTurnId ?? null,
+    }
+    const currentTimeline = threadFileChangesTimelineByThreadId.value[threadId] ?? null
+    const nextTimeline = resolveThreadFileChangeTimelineUpdate(currentTimeline, normalizedTimeline, {
+      authoritative: true,
+    })
+    threadFileChangesTimelineByThreadId.value = {
+      ...threadFileChangesTimelineByThreadId.value,
+      [threadId]: nextTimeline,
+    }
+    syncLatestReversibleTurnForThread(threadId)
+    saveThreadFileChangeTimelineMap(threadFileChangesTimelineByThreadId.value)
+  }
+
+  function upsertThreadFileChangesRecord(
+    threadId: string,
+    record: UiThreadFileChangeTimeline['records'][number],
+  ): void {
+    const current = threadFileChangesTimelineByThreadId.value[threadId]?.records ?? []
+    const existing = current.find((entry) => entry.turnId === record.turnId) ?? null
+    const nextRecord = existing ? mergeTurnFileChangeRecords(existing, record) : record
+    const nextRecords = current.filter((entry) => entry.turnId !== record.turnId).concat(nextRecord)
+    setThreadFileChangeTimelineForThread(threadId, {
+      threadId,
+      records: nextRecords,
+      latestReversibleTurnId: threadFileChangesTimelineByThreadId.value[threadId]?.latestReversibleTurnId ?? null,
+    })
+  }
+
+  function markLatestReversibleTurn(
+    threadId: string,
+    turnId: string,
+    options: { isReverted?: boolean } = {},
+  ): void {
+    const currentTimeline = threadFileChangesTimelineByThreadId.value[threadId]
+    if (!currentTimeline) return
+    const isReverted = options.isReverted === true
+    setThreadFileChangeTimelineForThread(threadId, {
+      threadId,
+      latestReversibleTurnId: turnId || null,
+      records: currentTimeline.records.map((record) => ({
+        ...record,
+        isLatestChangeTurn: record.turnId === turnId,
+        canUndo: record.turnId === turnId && !isReverted,
+        canReapply: record.turnId === turnId && isReverted,
+        isReverted: record.turnId === turnId ? isReverted : false,
+      })),
+    })
+  }
+
+  async function refreshLatestReversibleThreadFileChange(threadId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return
+    const latest = await fetchLatestReversibleThreadFileChange(normalizedThreadId)
+    const latestRow = asRecord(latest)
+    const turnId = typeof latestRow?.turnId === 'string' ? latestRow.turnId.trim() : ''
+    const canReapply = latestRow?.canReapply === true
+    if (!turnId) {
+      const currentTimeline = threadFileChangesTimelineByThreadId.value[normalizedThreadId]
+      if (!currentTimeline) return
+      setThreadFileChangeTimelineForThread(normalizedThreadId, {
+        threadId: normalizedThreadId,
+        latestReversibleTurnId: null,
+        records: currentTimeline.records.map((record) => ({
+          ...record,
+          canUndo: false,
+          canReapply: false,
+          isLatestChangeTurn: false,
+          isReverted: false,
+        })),
+      })
+      return
+    }
+    markLatestReversibleTurn(normalizedThreadId, turnId, { isReverted: canReapply })
+  }
+
+  async function runLatestThreadFileChangeAction(
+    turnId: string,
+    mode: 'undo' | 'reapply',
+  ): Promise<boolean> {
+    const normalizedThreadId = selectedThreadId.value.trim()
+    const normalizedTurnId = turnId.trim()
+    if (!normalizedThreadId || !normalizedTurnId) return false
+
+    const currentTimeline = threadFileChangesTimelineByThreadId.value[normalizedThreadId]
+    if (!currentTimeline || currentTimeline.latestReversibleTurnId !== normalizedTurnId) {
+      return false
+    }
+
+    error.value = ''
+    try {
+      if (mode === 'undo') {
+        await undoLatestThreadFileChangeRequest(normalizedThreadId)
+        markLatestReversibleTurn(normalizedThreadId, normalizedTurnId, { isReverted: true })
+      } else {
+        await reapplyLatestThreadFileChangeRequest(normalizedThreadId)
+        markLatestReversibleTurn(normalizedThreadId, normalizedTurnId, { isReverted: false })
+      }
+
+      await refreshSelectedWorkspaceBranchState({ includeBranches: false, silent: true })
+      await refreshSelectedWorkspaceDiffTotals()
+      await refreshSelectedWorkspacePushStatus({ silent: true })
+      return true
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error
+        ? unknownError.message
+        : `Failed to ${mode} latest thread file change`
+      return false
+    }
+  }
+
+  async function undoLatestThreadFileChange(turnId: string): Promise<boolean> {
+    return runLatestThreadFileChangeAction(turnId, 'undo')
+  }
+
+  async function reapplyLatestThreadFileChange(turnId: string): Promise<boolean> {
+    return runLatestThreadFileChangeAction(turnId, 'reapply')
   }
 
   function upsertLiveAgentMessage(threadId: string, nextMessage: UiMessage): void {
@@ -743,6 +1881,7 @@ export function useDesktopState() {
       request,
       GLOBAL_SERVER_REQUEST_SCOPE,
     )
+    syncWorkspaceBranchBlockedReasons()
   }
 
   function removePendingServerRequestById(requestId: number): void {
@@ -750,6 +1889,50 @@ export function useDesktopState() {
       pendingServerRequestsByThreadId.value,
       requestId,
     )
+    syncWorkspaceBranchBlockedReasons()
+  }
+
+  function mapPersistedRequestsByThreadId(requests: UiPersistedServerRequest[]): Record<string, UiPersistedServerRequest[]> {
+    const next: Record<string, UiPersistedServerRequest[]> = {}
+    for (const request of requests) {
+      const threadId = request.threadId || GLOBAL_SERVER_REQUEST_SCOPE
+      const current = next[threadId] ?? []
+      current.push(request)
+      next[threadId] = current
+    }
+    for (const [threadId, rows] of Object.entries(next)) {
+      next[threadId] = rows.sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
+    }
+    return next
+  }
+
+  function replacePersistedServerRequests(requests: UiPersistedServerRequest[]): void {
+    persistedServerRequestsByThreadId.value = mapPersistedRequestsByThreadId(requests)
+    syncWorkspaceBranchBlockedReasons()
+  }
+
+  function replaceSharedSessionSnapshots(rows: UiSharedSessionSnapshot[]): void {
+    const bySessionId = new Map<string, UiSharedSessionSnapshot>()
+    for (const row of rows) {
+      const sessionId = row.sessionId.trim()
+      if (!sessionId) continue
+      bySessionId.set(sessionId, row)
+    }
+    sharedSessionSnapshots.value = Array.from(bySessionId.values()).sort((first, second) =>
+      second.updatedAtIso.localeCompare(first.updatedAtIso),
+    )
+  }
+
+  function removePersistedServerRequestById(requestId: number): void {
+    const next: Record<string, UiPersistedServerRequest[]> = {}
+    for (const [threadId, requests] of Object.entries(persistedServerRequestsByThreadId.value)) {
+      const filtered = requests.filter((request) => request.id !== requestId)
+      if (filtered.length > 0) {
+        next[threadId] = filtered
+      }
+    }
+    persistedServerRequestsByThreadId.value = next
+    syncWorkspaceBranchBlockedReasons()
   }
 
   function handleServerRequestNotification(notification: RpcNotification): boolean {
@@ -757,6 +1940,7 @@ export function useDesktopState() {
       const request = normalizeServerRequest(notification.params, GLOBAL_SERVER_REQUEST_SCOPE)
       if (!request) return true
       upsertPendingServerRequest(request)
+      void refreshSharedSessionSnapshots({ silent: true })
       return true
     }
 
@@ -765,7 +1949,9 @@ export function useDesktopState() {
       const id = row?.id
       if (typeof id === 'number' && Number.isInteger(id)) {
         removePendingServerRequestById(id)
+        removePersistedServerRequestById(id)
       }
+      void refreshSharedSessionSnapshots({ silent: true })
       return true
     }
 
@@ -785,7 +1971,7 @@ export function useDesktopState() {
         ...contextUsageByThreadId.value,
         [threadContextUsage.threadId]: threadContextUsage.usage,
       }
-      saveThreadContextUsageMap(contextUsageByThreadId.value)
+      saveThreadContextUsageMap(contextUsageByThreadId.value, activeAccountProfileId.value)
     }
 
     if (notification.method === 'account/rateLimits/updated') {
@@ -814,9 +2000,6 @@ export function useDesktopState() {
       setTurnSummaryForThread(startedTurn.threadId, null)
       setTurnErrorForThread(startedTurn.threadId, null)
       setThreadInProgress(startedTurn.threadId, true)
-      if (latestFileChangesByThreadId.value[startedTurn.threadId]) {
-        latestFileChangesByThreadId.value = omitKey(latestFileChangesByThreadId.value, startedTurn.threadId)
-      }
       if (eventUnreadByThreadId.value[startedTurn.threadId]) {
         eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, startedTurn.threadId)
       }
@@ -826,12 +2009,23 @@ export function useDesktopState() {
     if (turnDiffUpdate) {
       const normalized = normalizeTurnDiffToFileChanges(turnDiffUpdate.diff, turnDiffUpdate.turnId)
       if (normalized) {
-        latestFileChangesByThreadId.value = {
-          ...latestFileChangesByThreadId.value,
-          [turnDiffUpdate.threadId]: normalized,
-        }
-      } else if (latestFileChangesByThreadId.value[turnDiffUpdate.threadId]) {
-        latestFileChangesByThreadId.value = omitKey(latestFileChangesByThreadId.value, turnDiffUpdate.threadId)
+        upsertThreadFileChangesRecord(turnDiffUpdate.threadId, {
+          turnId: normalized.turnId,
+          files: normalized.files,
+          totalAdditions: normalized.totalAdditions,
+          totalDeletions: normalized.totalDeletions,
+          createdAtIso: new Date().toISOString(),
+          source: 'turn_diff',
+          canUndo: false,
+          canReapply: false,
+          isLatestChangeTurn: true,
+          isReverted: false,
+        })
+        debugFileChangesState('turn-diff-update', {
+          threadId: turnDiffUpdate.threadId,
+          turnId: normalized.turnId,
+          fileCount: normalized.files.length,
+        })
       }
     }
 
@@ -892,6 +2086,7 @@ export function useDesktopState() {
         id: liveAgentMessageDelta.messageId,
         role: 'assistant',
         text: nextText,
+        turnId: activeTurnIdByThreadId.value[notificationThreadId] ?? '',
         messageType: 'agentMessage.live',
       })
     }
@@ -1053,7 +2248,7 @@ export function useDesktopState() {
         }
       }
 
-      const { messages: nextMessages, fileChanges, inProgress, activeTurnId } = await getThreadConversationData(threadId, {
+      const { messages: nextMessages, fileChanges, fileChangeTimeline, inProgress, activeTurnId } = await getThreadConversationData(threadId, {
         signal: options.signal,
       })
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
@@ -1061,11 +2256,22 @@ export function useDesktopState() {
         preserveMissing: options.silent === true,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
-      if (fileChanges) {
-        latestFileChangesByThreadId.value = {
-          ...latestFileChangesByThreadId.value,
-          [threadId]: fileChanges,
-        }
+      if (fileChangeTimeline) {
+        setThreadFileChangeTimelineForThread(threadId, fileChangeTimeline)
+        debugFileChangesState('load-messages:file-changes', {
+          threadId,
+          turnId: fileChanges?.turnId ?? fileChangeTimeline.records.at(-1)?.turnId ?? null,
+          fileCount: fileChanges?.files.length ?? fileChangeTimeline.records.at(-1)?.files.length ?? 0,
+        })
+        await refreshLatestReversibleThreadFileChange(threadId)
+      } else {
+        const cachedRecords = threadFileChangesTimelineByThreadId.value[threadId]?.records ?? []
+        const cachedLatest = cachedRecords.at(-1) ?? null
+        debugFileChangesState('load-messages:no-file-changes', {
+          threadId,
+          cachedTurnId: cachedLatest?.turnId ?? null,
+          cachedFileCount: cachedLatest?.files.length ?? 0,
+        })
       }
 
       const previousLiveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
@@ -1116,8 +2322,13 @@ export function useDesktopState() {
         loadThreads(),
         refreshModelPreferences(),
         refreshRateLimitUsage({ force: true }),
+        loadAccountProfiles(),
+        refreshSharedSessionSnapshots({ silent: true }),
       ])
       await loadMessages(selectedThreadId.value)
+      await refreshSelectedWorkspaceBranchState({ includeBranches: false, silent: true })
+      await refreshSelectedWorkspacePushStatus({ silent: true })
+      await refreshSelectedWorkspaceDiffTotals()
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
     }
@@ -1128,7 +2339,17 @@ export function useDesktopState() {
     selectThreadLoadAbortController?.abort()
     selectThreadLoadAbortController = threadId ? new AbortController() : null
     setSelectedThreadId(threadId)
+    debugFileChangesState('select-thread', {
+      threadId,
+      hasPersistedFileChanges: Boolean(threadFileChangesTimelineByThreadId.value[threadId]?.records.length),
+      persistedTurnId: threadFileChangesTimelineByThreadId.value[threadId]?.records.at(-1)?.turnId ?? null,
+      persistedFileCount: threadFileChangesTimelineByThreadId.value[threadId]?.records.at(-1)?.files.length ?? 0,
+    })
     if (!threadId) return
+
+    void refreshSelectedWorkspaceBranchState({ includeBranches: false, silent: true })
+    void refreshSelectedWorkspacePushStatus({ silent: true })
+    void refreshSelectedWorkspaceDiffTotals()
 
     void loadMessages(threadId, {
       signal: selectThreadLoadAbortController?.signal,
@@ -1424,6 +2645,7 @@ export function useDesktopState() {
     isPolling.value = true
 
     try {
+      await refreshSharedSessionSnapshots({ silent: true })
       const now = Date.now()
       const shouldRefreshThreadList = now - lastThreadListRefreshAtMs >= THREAD_LIST_AUTO_REFRESH_INTERVAL_MS
       if (shouldRefreshThreadList) {
@@ -1503,7 +2725,11 @@ export function useDesktopState() {
     if (isAutoRefreshEnabled.value) {
       startAutoRefreshTimer()
     }
+    void loadAccountProfiles()
+    void refreshRateLimitUsage()
+    void refreshSharedSessionSnapshots({ silent: true })
     void loadPendingServerRequestsFromBridge()
+    void loadPersistedServerRequestsFromBridge()
     stopNotificationStream = subscribeCodexNotifications((notification) => {
       applyRealtimeUpdates(notification)
       queueEventDrivenSync(notification)
@@ -1519,8 +2745,28 @@ export function useDesktopState() {
           upsertPendingServerRequest(request)
         }
       }
+      syncWorkspaceBranchBlockedReasons()
     } catch {
       // Keep UI usable when pending request endpoint is temporarily unavailable.
+    }
+  }
+
+  async function loadPersistedServerRequestsFromBridge(): Promise<void> {
+    try {
+      const rows = await getPersistedServerRequests()
+      replacePersistedServerRequests(rows)
+    } catch {
+      // Keep UI usable when persisted request endpoint is temporarily unavailable.
+    }
+  }
+
+  async function refreshSharedSessionSnapshots(options: { silent?: boolean } = {}): Promise<void> {
+    try {
+      const rows = await getSharedSessionSnapshots()
+      replaceSharedSessionSnapshots(rows)
+    } catch (unknownError) {
+      if (options.silent === true) return
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to load shared session snapshots'
     }
   }
 
@@ -1531,8 +2777,30 @@ export function useDesktopState() {
         error: reply.error,
       })
       removePendingServerRequestById(reply.id)
+      removePersistedServerRequestById(reply.id)
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Failed to reply to server request'
+    }
+  }
+
+  async function dismissPersistedServerRequests(requestIds: number[]): Promise<boolean> {
+    const normalizedRequestIds = requestIds
+      .filter((value) => Number.isInteger(value))
+      .map((value) => Math.trunc(value))
+    if (normalizedRequestIds.length === 0) return false
+
+    try {
+      const dismissedIds = await dismissPersistedServerRequestsRequest(normalizedRequestIds)
+      for (const requestId of dismissedIds) {
+        removePersistedServerRequestById(requestId)
+      }
+      if (dismissedIds.length > 0) {
+        void refreshSharedSessionSnapshots({ silent: true })
+      }
+      return dismissedIds.length > 0
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to dismiss persisted server requests'
+      return false
     }
   }
 
@@ -1613,10 +2881,24 @@ export function useDesktopState() {
     selectedThread,
     selectedThreadScrollState,
     selectedThreadServerRequests,
+    selectedThreadPersistedServerRequests,
+    selectedWorkspacePersistedServerRequests,
+    globalLiveServerRequests,
+    liveApprovalThreadIdSet,
+    globalPersistedServerRequests,
+    sharedSessionSnapshots,
+    sharedSessionSnapshotByThreadId,
+    selectedSharedSessionSnapshot,
+    selectedWorkspaceModel,
+    selectedWorkspaceDiffTotals,
+    selectedThreadFileChangeTimeline,
     selectedThreadFileChanges,
     selectedQueuedMessages,
+    selectedWorkspaceBranchState,
     selectedThreadContextUsage,
     selectedThreadRateLimitUsage,
+    accountProfiles,
+    activeAccountProfileId,
     isCompactingSelectedThreadContext,
     selectedLiveOverlay,
     selectedThreadId,
@@ -1641,10 +2923,36 @@ export function useDesktopState() {
     sendMessageToNewThread,
     interruptSelectedThreadTurn,
     compactSelectedThreadContext,
+    getWorkspaceModelForCwd,
+    getWorkspaceBranchStateForCwd,
+    refreshSelectedWorkspaceBranchState,
+    refreshWorkspaceBranchStateForCwd,
+    refreshSelectedWorkspacePushStatus,
+    refreshWorkspacePushStatusForCwd,
+    refreshSelectedWorkspaceDiffTotals,
+    fetchWorkspaceDiffSnapshotForMode,
+    openPreferredWorkspaceDiffSnapshot,
+    setWorkspaceDiffMode,
+    setWorkspaceBaseBranch,
+    switchSelectedWorkspaceBranch,
+    createAndSwitchSelectedWorkspaceBranch,
+    pushSelectedWorkspaceBranch,
+    switchWorkspaceBranchForCwd,
+    createAndSwitchWorkspaceBranchForCwd,
+    pushWorkspaceBranchForCwd,
+    undoLatestThreadFileChange,
+    reapplyLatestThreadFileChange,
     setSelectedModelId,
     setSelectedReasoningEffort,
     setSelectedChatMode,
+    loadAccountProfiles,
+    switchAccountProfile,
+    addAccountProfile,
+    removeAccountProfile,
+    startAccountAlignment,
     respondToPendingServerRequest,
+    dismissPersistedServerRequests,
+    refreshSharedSessionSnapshots,
     renameProject,
     removeProject,
     reorderProject,

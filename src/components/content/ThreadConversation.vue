@@ -3,41 +3,39 @@
     <p v-if="isLoading" class="conversation-loading">{{ t('threadConversation.loadingMessages') }}</p>
 
     <p
-      v-else-if="messages.length === 0 && pendingRequests.length === 0"
+      v-else-if="messages.length === 0 && visiblePendingRequests.length === 0 && !hasPrependSlot"
       class="conversation-empty"
     >
       {{ t('threadConversation.noMessages') }}
     </p>
 
     <ul v-else ref="conversationListRef" class="conversation-list" @scroll="onConversationScroll">
+      <li v-if="hasPrependSlot" class="conversation-item conversation-item-prepend">
+        <slot name="prepend" />
+      </li>
       <li
-        v-for="request in pendingRequests"
+        v-for="request in visiblePendingRequests"
         :key="`server-request:${request.id}`"
         class="conversation-item conversation-item-request"
       >
         <div class="message-row">
           <div class="message-stack">
-            <article class="request-card">
-              <p class="request-title">{{ request.method }}</p>
+            <ApprovalRequestCard
+              v-if="shouldRenderApprovalCard(request)"
+              :model="readApprovalModel(request)"
+              :ui-language="normalizedLanguage"
+              @submit="onSubmitApprovalRequest(request, $event)"
+              @skip="onCancelApprovalRequest(request)"
+              @open-workspace-diff="onOpenWorkspaceDiff"
+            />
+
+            <article v-else class="request-card">
+              <p class="request-title">{{ readRequestTitle(request) }}</p>
               <p class="request-meta">{{ t('threadConversation.requestMeta', { id: request.id, time: formatIsoTime(request.receivedAtIso) }) }}</p>
 
               <p v-if="readRequestReason(request)" class="request-reason">{{ readRequestReason(request) }}</p>
 
-              <section v-if="request.method === 'item/commandExecution/requestApproval'" class="request-actions">
-                <button type="button" class="request-button request-button-primary" @click="onRespondApproval(request.id, 'accept')">{{ t('threadConversation.accept') }}</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'acceptForSession')">{{ t('threadConversation.acceptForSession') }}</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'decline')">{{ t('threadConversation.decline') }}</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'cancel')">{{ t('threadConversation.cancel') }}</button>
-              </section>
-
-              <section v-else-if="request.method === 'item/fileChange/requestApproval'" class="request-actions">
-                <button type="button" class="request-button request-button-primary" @click="onRespondApproval(request.id, 'accept')">{{ t('threadConversation.accept') }}</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'acceptForSession')">{{ t('threadConversation.acceptForSession') }}</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'decline')">{{ t('threadConversation.decline') }}</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'cancel')">{{ t('threadConversation.cancel') }}</button>
-              </section>
-
-              <section v-else-if="request.method === 'item/tool/requestUserInput'" class="request-user-input">
+              <section v-if="request.method === 'item/tool/requestUserInput'" class="request-user-input">
                 <div
                   v-for="question in readToolQuestions(request)"
                   :key="`${request.id}:${question.id}`"
@@ -84,7 +82,7 @@
       </li>
 
       <li
-        v-for="message in messages"
+        v-for="(message, messageIndex) in messages"
         :key="message.id"
         class="conversation-item"
         :data-role="message.role"
@@ -105,46 +103,36 @@
                 </li>
               </ul>
 
-              <article v-if="message.text.length > 0" class="message-card" :data-role="message.role">
-                <div v-if="message.messageType === 'worked'" class="worked-separator" aria-live="polite">
-                  <span class="worked-separator-line" aria-hidden="true" />
-                  <p class="worked-separator-text">{{ formatWorkedMessage(message.text) }}</p>
-                  <span class="worked-separator-line" aria-hidden="true" />
+              <div v-if="message.text.length > 0" class="message-card-shell" :data-role="message.role">
+                <div
+                  v-if="message.role === 'user' && readCopyPayloadAt(messageIndex)"
+                  class="message-copy-external"
+                >
+                  <button
+                    type="button"
+                    class="message-copy-button"
+                    :data-copied="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key"
+                    :aria-label="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key ? t('threadConversation.copied') : t('threadConversation.copyMessage')"
+                    :title="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key ? t('threadConversation.copied') : t('threadConversation.copy')"
+                    @click="onCopyMessage(messageIndex)"
+                  >
+                    <IconTablerCheck v-if="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key" class="icon-svg" />
+                    <IconTablerCopy v-else class="icon-svg" />
+                  </button>
                 </div>
-                <div v-else class="message-content">
-                  <template v-for="(block, blockIndex) in parseMessageBlocks(message.text)" :key="`block-${blockIndex}`">
-                    <template v-if="block.kind === 'text'">
-                      <template v-for="(part, partIndex) in parseTextParts(block.value)" :key="`part-${blockIndex}-${partIndex}`">
-                        <p v-if="part.kind === 'paragraph'" class="message-text">
-                          <template v-for="(segment, index) in parseInlineSegments(part.value, projectCwd)" :key="`seg-p-${blockIndex}-${partIndex}-${index}`">
-                            <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
-                            <strong v-else-if="segment.kind === 'bold'" class="message-strong-text">{{ segment.value }}</strong>
-                            <a
-                              v-else-if="segment.kind === 'file'"
-                              class="message-file-link"
-                              :href="buildFileReferenceHref(segment)"
-                              @click.prevent="onFileReferenceClick(segment)"
-                            >
-                              {{ segment.displayName }}
-                            </a>
-                            <a
-                              v-else-if="segment.kind === 'markdownLink'"
-                              class="message-file-link"
-                              :href="segment.href"
-                              @click.prevent="onMarkdownLinkClick(segment)"
-                            >
-                              {{ segment.label }}
-                            </a>
-                            <code v-else class="message-inline-code">{{ segment.value }}</code>
-                          </template>
-                        </p>
-                        <ul v-else class="message-list">
-                          <li
-                            v-for="(item, itemIndex) in part.items"
-                            :key="`seg-l-${blockIndex}-${partIndex}-${itemIndex}`"
-                            class="message-list-item"
-                          >
-                            <template v-for="(segment, index) in parseInlineSegments(item, projectCwd)" :key="`seg-li-${blockIndex}-${partIndex}-${itemIndex}-${index}`">
+
+                <article class="message-card" :data-role="message.role">
+                  <div v-if="message.messageType === 'worked'" class="worked-separator" aria-live="polite">
+                    <span class="worked-separator-line" aria-hidden="true" />
+                    <p class="worked-separator-text">{{ formatWorkedMessage(message.text) }}</p>
+                    <span class="worked-separator-line" aria-hidden="true" />
+                  </div>
+                  <div v-else class="message-content">
+                    <template v-for="(block, blockIndex) in parseMessageBlocks(message.text)" :key="`block-${blockIndex}`">
+                      <template v-if="block.kind === 'text'">
+                        <template v-for="(part, partIndex) in parseTextParts(block.value)" :key="`part-${blockIndex}-${partIndex}`">
+                          <p v-if="part.kind === 'paragraph'" class="message-text">
+                            <template v-for="(segment, index) in parseInlineSegments(part.value, projectCwd)" :key="`seg-p-${blockIndex}-${partIndex}-${index}`">
                               <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
                               <strong v-else-if="segment.kind === 'bold'" class="message-strong-text">{{ segment.value }}</strong>
                               <a
@@ -165,47 +153,117 @@
                               </a>
                               <code v-else class="message-inline-code">{{ segment.value }}</code>
                             </template>
-                          </li>
-                        </ul>
+                          </p>
+                          <ul v-else class="message-list">
+                            <li
+                              v-for="(item, itemIndex) in part.items"
+                              :key="`seg-l-${blockIndex}-${partIndex}-${itemIndex}`"
+                              class="message-list-item"
+                            >
+                              <template v-for="(segment, index) in parseInlineSegments(item, projectCwd)" :key="`seg-li-${blockIndex}-${partIndex}-${itemIndex}-${index}`">
+                                <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
+                                <strong v-else-if="segment.kind === 'bold'" class="message-strong-text">{{ segment.value }}</strong>
+                                <a
+                                  v-else-if="segment.kind === 'file'"
+                                  class="message-file-link"
+                                  :href="buildFileReferenceHref(segment)"
+                                  @click.prevent="onFileReferenceClick(segment)"
+                                >
+                                  {{ segment.displayName }}
+                                </a>
+                                <a
+                                  v-else-if="segment.kind === 'markdownLink'"
+                                  class="message-file-link"
+                                  :href="segment.href"
+                                  @click.prevent="onMarkdownLinkClick(segment)"
+                                >
+                                  {{ segment.label }}
+                                </a>
+                                <code v-else class="message-inline-code">{{ segment.value }}</code>
+                              </template>
+                            </li>
+                          </ul>
+                        </template>
                       </template>
+                      <pre v-else class="message-code-block"><code class="message-code-body">{{ block.value }}</code></pre>
                     </template>
-                    <pre v-else class="message-code-block"><code class="message-code-body">{{ block.value }}</code></pre>
-                  </template>
-                </div>
-              </article>
+                    <div
+                      v-if="message.role !== 'user' && readCopyPayloadAt(messageIndex)"
+                      class="message-content-actions"
+                    >
+                      <button
+                        type="button"
+                        class="message-copy-button"
+                        :data-copied="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key"
+                        :aria-label="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key ? t('threadConversation.copied') : t('threadConversation.copyMessage')"
+                        :title="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key ? t('threadConversation.copied') : t('threadConversation.copy')"
+                        @click="onCopyMessage(messageIndex)"
+                      >
+                        <IconTablerCheck v-if="copiedMessageKey === readCopyPayloadAt(messageIndex)?.key" class="icon-svg" />
+                        <IconTablerCopy v-else class="icon-svg" />
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              </div>
             </article>
-          </div>
-        </div>
-      </li>
-      <li v-if="fileChanges && fileChanges.files.length > 0" class="conversation-item conversation-item-request">
-        <div class="message-row">
-          <div class="message-stack">
-            <article class="file-change-card">
+            <article
+              v-if="readMessageFileChanges(message) && isLastAssistantMessageInTurn(message.turnId ?? '', messageIndex) && !hasPendingFileChangeApproval"
+              class="file-change-card"
+            >
               <header class="file-change-card-header">
                 <p class="file-change-card-title">
-                  {{ fileChanges.files.length }} 个文件已更改
-                  <span class="file-change-stats-add">+{{ fileChanges.totalAdditions }}</span>
-                  <span class="file-change-stats-del">-{{ fileChanges.totalDeletions }}</span>
+                  {{ readMessageFileChanges(message)?.files.length }} 个文件已更改
+                  <span class="file-change-stats-add">+{{ readMessageFileChanges(message)?.totalAdditions ?? 0 }}</span>
+                  <span class="file-change-stats-del">-{{ readMessageFileChanges(message)?.totalDeletions ?? 0 }}</span>
                 </p>
-                <button type="button" class="file-change-header-action" @click="onOpenWorkspaceDiff">
-                  完整 Diff
-                </button>
               </header>
               <ul class="file-change-list">
-                <li v-for="change in fileChanges.files" :key="`${fileChanges.turnId}:${change.path}`" class="file-change-item">
-                  <button
-                    type="button"
-                    class="file-change-button"
-                    @click="onOpenFileDiff(change.path, change.diff, change.additions, change.deletions)"
-                  >
+                <li
+                  v-for="change in readMessageFileChanges(message)?.files ?? []"
+                  :key="`${message.turnId}:${change.path}`"
+                  class="file-change-item"
+                >
+                  <div class="file-change-row">
                     <span class="file-change-path">{{ displayFileChangePath(change.path) }}</span>
-                    <span class="file-change-stats">
-                      <span class="file-change-stats-add">+{{ change.additions }}</span>
-                      <span class="file-change-stats-del">-{{ change.deletions }}</span>
-                    </span>
-                  </button>
+                    <div class="file-change-row-actions">
+                      <span class="file-change-stats">
+                        <span class="file-change-stats-add">+{{ change.additions }}</span>
+                        <span class="file-change-stats-del">-{{ change.deletions }}</span>
+                      </span>
+                      <button
+                        type="button"
+                        class="file-change-view-button"
+                        :disabled="!change.diff.trim().length"
+                        @click="onOpenFileDiff(change.path, change.diff, change.additions, change.deletions, readMessageFileChanges(message)?.totalAdditions ?? change.additions, readMessageFileChanges(message)?.totalDeletions ?? change.deletions)"
+                      >
+                        {{ t('threadConversation.viewFileChangeDiff') }}
+                      </button>
+                    </div>
+                  </div>
                 </li>
               </ul>
+              <div
+                v-if="readMessageFileChanges(message)?.canUndo || readMessageFileChanges(message)?.canReapply"
+                class="file-change-actions"
+              >
+                <button
+                  v-if="readMessageFileChanges(message)?.canUndo"
+                  type="button"
+                  class="file-change-action-button"
+                  @click="onUndoThreadFileChange(message.turnId ?? '')"
+                >
+                  {{ t('threadConversation.undoLatestFileChange') }}
+                </button>
+                <button
+                  v-if="readMessageFileChanges(message)?.canReapply"
+                  type="button"
+                  class="file-change-action-button"
+                  @click="onReapplyThreadFileChange(message.turnId ?? '')"
+                >
+                  {{ t('threadConversation.reapplyLatestFileChange') }}
+                </button>
+              </div>
             </article>
           </div>
         </div>
@@ -225,11 +283,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import type { ThreadScrollState, UiMessage, UiServerRequest, UiTurnFileChanges } from '../../types/codex'
+import { computed, nextTick, onBeforeUnmount, ref, useSlots, watch } from 'vue'
+import type {
+  ThreadScrollState,
+  UiMessage,
+  UiServerRequest,
+  UiThreadFileChangeTimeline,
+  UiTurnFileChanges,
+} from '../../types/codex'
 import { tUi, type UiLanguage, type UiTextKey } from '../../i18n/uiText'
+import IconTablerCheck from '../icons/IconTablerCheck.vue'
+import IconTablerCopy from '../icons/IconTablerCopy.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
+import ApprovalRequestCard from './ApprovalRequestCard.vue'
 import { formatDisplayPath } from '../../utils/pathUtils'
+import { copyTextToClipboard, readMessageCopyPayload } from '../../utils/messageCopy'
+import {
+  buildApprovalRequestDisplayModel,
+  isApprovalRequestMethod,
+  type ApprovalDecision,
+  type ApprovalRequestDisplayModel,
+} from '../../utils/approvalRequestDisplay'
 import {
   type InlineSegment,
   buildFileReferenceHrefFromValue,
@@ -246,35 +320,85 @@ const props = defineProps<{
   activeThreadId: string
   projectCwd: string
   scrollState: ThreadScrollState | null
+  turnFileChangesTimeline: UiThreadFileChangeTimeline | null
   fileChanges: UiTurnFileChanges | null
   uiLanguage?: UiLanguage
   isThinkingIndicatorVisible?: boolean
+  floatingRequestId?: number | null
 }>()
 
 const emit = defineEmits<{
   updateScrollState: [payload: { threadId: string; state: ThreadScrollState }]
   respondServerRequest: [payload: { id: number; result?: unknown; error?: { code?: number; message: string } }]
   openFileReference: [payload: { path: string; line: number | null }]
-  openFileDiff: [payload: { path: string; diff: string; additions: number; deletions: number }]
+  openFileDiff: [payload: { path: string; diff: string; additions: number; deletions: number; totalAdditions: number; totalDeletions: number }]
   openWorkspaceDiff: []
+  'undo-thread-file-change': [turnId: string]
+  'reapply-thread-file-change': [turnId: string]
 }>()
 
+const slots = useSlots()
 const conversationListRef = ref<HTMLElement | null>(null)
 const bottomAnchorRef = ref<HTMLElement | null>(null)
 const modalImageUrl = ref('')
+const copiedMessageKey = ref<string | null>(null)
 const toolQuestionAnswers = ref<Record<string, string>>({})
 const toolQuestionOtherAnswers = ref<Record<string, string>>({})
 const BOTTOM_THRESHOLD_PX = 16
+const hasPendingFileChangeApproval = computed(() =>
+  props.pendingRequests.some((request) => request.method === 'item/fileChange/requestApproval'),
+)
 
 let scrollRestoreFrame = 0
 let bottomLockFrame = 0
 let bottomLockFramesLeft = 0
 let shouldForceBottomOnNextRestore = false
+let copiedMessageResetTimer: ReturnType<typeof setTimeout> | null = null
 const trackedPendingImages = new WeakSet<HTMLImageElement>()
 const normalizedLanguage = computed<UiLanguage>(() => props.uiLanguage ?? 'zh')
+const hasPrependSlot = computed(() => Boolean(slots.prepend))
+const visiblePendingRequests = computed(() =>
+  props.pendingRequests.filter((request) => !(isApprovalRequest(request) && request.id === props.floatingRequestId)),
+)
+const turnFileChangesTimeline = computed(() => props.turnFileChangesTimeline?.records ?? [])
+const lastAssistantMessageIndexByTurnId = computed<Record<string, number>>(() => {
+  const byTurnId: Record<string, number> = {}
+  for (let index = 0; index < props.messages.length; index += 1) {
+    const candidate = props.messages[index]
+    if (candidate.role !== 'assistant') continue
+    const turnId = candidate.turnId?.trim() ?? ''
+    if (!turnId) continue
+    byTurnId[turnId] = index
+  }
+  return byTurnId
+})
 
 function t(key: UiTextKey, params?: Record<string, number | string>): string {
   return tUi(normalizedLanguage.value, key, params)
+}
+
+function readMessageFileChanges(message: UiMessage): UiThreadFileChangeTimeline['records'][number] | null {
+  const turnId = message.turnId?.trim() ?? ''
+  if (!turnId) return null
+  return turnFileChangesTimeline.value.find((record) => record.turnId === turnId) ?? null
+}
+
+function isLastAssistantMessageInTurn(turnId: string, messageIndex: number): boolean {
+  const normalizedTurnId = turnId.trim()
+  if (!normalizedTurnId) return false
+  return lastAssistantMessageIndexByTurnId.value[normalizedTurnId] === messageIndex
+}
+
+function onUndoThreadFileChange(turnId: string): void {
+  const normalizedTurnId = turnId.trim()
+  if (!normalizedTurnId) return
+  emit('undo-thread-file-change', normalizedTurnId)
+}
+
+function onReapplyThreadFileChange(turnId: string): void {
+  const normalizedTurnId = turnId.trim()
+  if (!normalizedTurnId) return
+  emit('reapply-thread-file-change', normalizedTurnId)
 }
 
 type ParsedToolQuestion = {
@@ -306,6 +430,27 @@ function readRequestReason(request: UiServerRequest): string {
   const params = asRecord(request.params)
   const reason = params?.reason
   return typeof reason === 'string' ? reason.trim() : ''
+}
+
+function readRequestTitle(request: UiServerRequest): string {
+  switch (request.method) {
+    case 'item/commandExecution/requestApproval':
+    case 'execCommandApproval':
+      return '需要确认命令执行'
+    case 'item/fileChange/requestApproval':
+    case 'applyPatchApproval':
+      return '需要确认文件改动'
+    case 'item/tool/requestUserInput':
+      return '需要你补充输入'
+    case 'item/tool/call':
+      return '需要确认工具调用结果'
+    default:
+      return '需要处理一条请求'
+  }
+}
+
+function isApprovalRequest(request: UiServerRequest): boolean {
+  return isApprovalRequestMethod(request.method)
 }
 
 function toolQuestionKey(requestId: number, questionId: string): string {
@@ -374,10 +519,29 @@ function onQuestionOtherAnswerInput(requestId: number, questionId: string, event
   }
 }
 
-function onRespondApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): void {
+function readApprovalModel(request: UiServerRequest): ApprovalRequestDisplayModel | null {
+  return buildApprovalRequestDisplayModel(
+    request,
+    props.fileChanges && props.fileChanges.turnId === request.turnId ? props.fileChanges : null,
+  )
+}
+
+function shouldRenderApprovalCard(request: UiServerRequest): boolean {
+  return isApprovalRequest(request) && readApprovalModel(request) !== null
+}
+
+function onSubmitApprovalRequest(request: UiServerRequest, decision: ApprovalDecision): void {
   emit('respondServerRequest', {
-    id: requestId,
+    id: request.id,
     result: { decision },
+  })
+}
+
+function onCancelApprovalRequest(request: UiServerRequest): void {
+  const model = readApprovalModel(request)
+  emit('respondServerRequest', {
+    id: request.id,
+    result: { decision: model?.cancelDecision ?? 'cancel' },
   })
 }
 
@@ -637,12 +801,21 @@ function onMarkdownLinkClick(segment: Extract<InlineSegment, { kind: 'markdownLi
   }
 }
 
-function onOpenFileDiff(path: string, diff: string, additions: number, deletions: number): void {
+function onOpenFileDiff(
+  path: string,
+  diff: string,
+  additions: number,
+  deletions: number,
+  totalAdditions: number,
+  totalDeletions: number,
+): void {
   emit('openFileDiff', {
     path,
     diff,
     additions,
     deletions,
+    totalAdditions,
+    totalDeletions,
   })
 }
 
@@ -654,6 +827,32 @@ function displayFileChangePath(path: string): string {
   return formatDisplayPath(path, props.projectCwd)
 }
 
+function readCopyPayloadAt(messageIndex: number) {
+  const copyPayload = readMessageCopyPayload(props.messages, messageIndex)
+  return copyPayload
+}
+
+function clearCopiedMessageFeedback(): void {
+  if (copiedMessageResetTimer) {
+    clearTimeout(copiedMessageResetTimer)
+    copiedMessageResetTimer = null
+  }
+}
+
+async function onCopyMessage(messageIndex: number): Promise<void> {
+  const copyPayload = readCopyPayloadAt(messageIndex)
+  if (!copyPayload) return
+  const copied = await copyTextToClipboard(copyPayload.text)
+  if (!copied) return
+
+  copiedMessageKey.value = copyPayload.key
+  clearCopiedMessageFeedback()
+  copiedMessageResetTimer = setTimeout(() => {
+    copiedMessageKey.value = null
+    copiedMessageResetTimer = null
+  }, 1400)
+}
+
 onBeforeUnmount(() => {
   if (scrollRestoreFrame) {
     cancelAnimationFrame(scrollRestoreFrame)
@@ -661,6 +860,7 @@ onBeforeUnmount(() => {
   if (bottomLockFrame) {
     cancelAnimationFrame(bottomLockFrame)
   }
+  clearCopiedMessageFeedback()
 })
 </script>
 
@@ -672,11 +872,13 @@ onBeforeUnmount(() => {
 }
 
 .conversation-loading {
-  @apply m-0 px-6 text-sm text-slate-500;
+  @apply m-0 px-6 text-sm;
+  color: var(--color-text-muted);
 }
 
 .conversation-empty {
-  @apply m-0 px-6 text-sm text-slate-500;
+  @apply m-0 px-6 text-sm;
+  color: var(--color-text-muted);
 }
 
 .conversation-list {
@@ -688,6 +890,10 @@ onBeforeUnmount(() => {
 }
 
 .conversation-item-request {
+  @apply justify-center;
+}
+
+.conversation-item-prepend {
   @apply justify-center;
 }
 
@@ -721,19 +927,29 @@ onBeforeUnmount(() => {
 }
 
 .file-change-card {
-  @apply w-full max-w-180 rounded-lg border border-zinc-300 bg-zinc-100 px-0 py-0 overflow-hidden;
+  @apply w-full max-w-180 rounded-lg border px-0 py-0 overflow-hidden;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-elevated);
 }
 
 .file-change-card-header {
-  @apply px-2.5 py-1.5 border-b border-zinc-300 bg-zinc-100 flex items-center justify-between gap-2;
+  @apply px-2.5 py-1.5 border-b flex items-center justify-between gap-2;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-subtle);
 }
 
 .file-change-card-title {
-  @apply m-0 text-xs leading-4 text-zinc-800;
+  @apply m-0 text-xs leading-4;
+  color: var(--color-text-primary);
 }
 
 .file-change-header-action {
-  @apply shrink-0 text-[11px] leading-4 text-zinc-700 hover:text-zinc-900 underline underline-offset-2;
+  @apply shrink-0 text-[11px] leading-4 underline underline-offset-2;
+  color: var(--color-link);
+}
+
+.file-change-header-action:hover {
+  color: var(--color-link-hover);
 }
 
 .file-change-list {
@@ -741,15 +957,37 @@ onBeforeUnmount(() => {
 }
 
 .file-change-item {
-  @apply m-0 border-b border-zinc-300 last:border-b-0;
+  @apply m-0 border-b last:border-b-0;
+  border-color: var(--color-border-default);
 }
 
-.file-change-button {
-  @apply w-full px-2.5 py-1.5 bg-zinc-200 text-left flex items-center justify-between gap-2 hover:bg-zinc-300 transition;
+.file-change-row {
+  @apply w-full px-2.5 py-1.5 flex items-center justify-between gap-2;
+  background: var(--color-bg-muted);
+}
+
+.file-change-row-actions {
+  @apply flex items-center gap-2 shrink-0;
 }
 
 .file-change-path {
-  @apply text-xs leading-4 text-zinc-800 truncate;
+  @apply text-xs leading-4 truncate;
+  color: var(--color-text-primary);
+}
+
+.file-change-view-button {
+  @apply rounded-md px-2 py-1 text-[11px] leading-4 transition;
+  color: var(--color-link);
+  background: var(--color-bg-subtle);
+}
+
+.file-change-view-button:hover {
+  color: var(--color-link-hover);
+  background: var(--color-bg-muted-hover);
+}
+
+.file-change-view-button:disabled {
+  @apply cursor-not-allowed opacity-60;
 }
 
 .file-change-stats {
@@ -762,6 +1000,22 @@ onBeforeUnmount(() => {
 
 .file-change-stats-del {
   @apply text-[#ef4444] font-medium;
+}
+
+.file-change-actions {
+  @apply flex items-center gap-2 px-2.5 py-2 border-t;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-subtle);
+}
+
+.file-change-action-button {
+  @apply rounded-md px-2.5 py-1.5 text-xs leading-4 transition;
+  color: var(--color-text-primary);
+  background: var(--color-bg-muted);
+}
+
+.file-change-action-button:hover {
+  background: var(--color-bg-muted-hover);
 }
 
 .request-title {
@@ -817,11 +1071,13 @@ onBeforeUnmount(() => {
 }
 
 .live-overlay-label {
-  @apply m-0 text-sm leading-5 font-medium text-zinc-600;
+  @apply m-0 text-sm leading-5 font-medium;
+  color: var(--color-text-secondary);
 }
 
 .live-overlay-reasoning {
-  @apply m-0 text-sm leading-5 text-zinc-500 whitespace-pre-wrap;
+  @apply m-0 text-sm leading-5 whitespace-pre-wrap;
+  color: var(--color-text-muted);
 }
 
 .live-overlay-error {
@@ -863,7 +1119,8 @@ onBeforeUnmount(() => {
 }
 
 .message-text {
-  @apply m-0 text-sm leading-relaxed whitespace-pre-wrap text-slate-800;
+  @apply m-0 text-sm leading-relaxed whitespace-pre-wrap;
+  color: var(--color-text-primary);
 }
 
 .message-content {
@@ -871,7 +1128,8 @@ onBeforeUnmount(() => {
 }
 
 .message-list {
-  @apply m-0 pl-5 list-disc text-sm leading-relaxed text-slate-800;
+  @apply m-0 pl-5 list-disc text-sm leading-relaxed;
+  color: var(--color-text-primary);
 }
 
 .message-list-item {
@@ -879,24 +1137,36 @@ onBeforeUnmount(() => {
 }
 
 .message-inline-code {
-  @apply rounded-md border border-slate-200 bg-slate-100/60 px-1.5 py-0.5 text-[0.875em] leading-[1.4] text-slate-900 font-mono;
+  @apply rounded-md border px-1.5 py-0.5 text-[0.875em] leading-[1.4] font-mono;
+  border-color: var(--color-border-default);
+  background: var(--color-code-bg);
+  color: var(--color-code-text);
 }
 
 .message-code-block {
-  @apply m-0 rounded-lg border border-slate-200 bg-slate-950 px-3 py-2 overflow-x-auto;
+  @apply m-0 rounded-lg border px-3 py-2 overflow-x-auto;
+  border-color: var(--color-border-default);
+  background: var(--color-code-block-bg);
 }
 
 .message-code-body {
-  @apply block whitespace-pre text-xs leading-5 text-slate-100;
+  @apply block whitespace-pre text-xs leading-5;
+  color: var(--color-code-block-text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 .message-strong-text {
-  @apply font-semibold text-slate-900;
+  @apply font-semibold;
+  color: var(--color-text-primary);
 }
 
 .message-file-link {
-  @apply text-sm leading-relaxed text-[#0969da] no-underline hover:text-[#1f6feb] hover:underline underline-offset-2;
+  @apply text-sm leading-relaxed no-underline hover:underline underline-offset-2;
+  color: var(--color-link);
+}
+
+.message-file-link:hover {
+  color: var(--color-link-hover);
 }
 
 .message-stack[data-role='user'] {
@@ -909,7 +1179,9 @@ onBeforeUnmount(() => {
 }
 
 .message-card[data-role='user'] {
-  @apply rounded-2xl bg-slate-200 px-4 py-3 max-w-[min(560px,100%)];
+  @apply rounded-2xl px-4 py-3 max-w-[min(560px,100%)];
+  background: var(--color-bg-muted);
+  color: var(--color-text-primary);
   width: fit-content;
   margin-left: auto;
   align-self: flex-end;
@@ -920,16 +1192,57 @@ onBeforeUnmount(() => {
   @apply px-0 py-0 bg-transparent border-none rounded-none;
 }
 
-:global(html[data-theme='dark']) .message-card[data-role='user'] {
-  @apply bg-zinc-700 border border-zinc-600;
+.message-card-shell {
+  @apply flex flex-col max-w-full;
 }
 
-:global(html[data-theme='dark']) .message-card[data-role='user'] .message-text {
-  @apply text-zinc-100;
+.message-card-shell[data-role='user'] {
+  @apply flex-row items-end gap-2;
 }
 
-:global(html[data-theme='dark']) .message-card[data-role='user'] .message-inline-code {
-  @apply border-zinc-500 bg-zinc-800 text-zinc-100;
+.message-content-actions {
+  @apply flex items-center justify-start pt-1;
+}
+
+.message-copy-external {
+  @apply shrink-0 self-end pb-1;
+}
+
+.message-copy-button {
+  @apply inline-flex h-8 min-w-8 items-center justify-center rounded-full border px-2 transition;
+  border-color: var(--color-border-default);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  opacity: 0.78;
+}
+
+.message-copy-button:hover,
+.message-copy-button:focus-visible,
+.message-copy-button[data-copied='true'] {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  opacity: 1;
+}
+
+.message-copy-button:focus-visible {
+  outline: 2px solid var(--color-border-strong);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .message-copy-button {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .message-card-shell[data-role='user']:hover .message-copy-button,
+  .message-card-shell[data-role='user']:focus-within .message-copy-button,
+  .message-content:hover .message-copy-button,
+  .message-content:focus-within .message-copy-button,
+  .message-copy-button[data-copied='true'] {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .conversation-item[data-message-type='worked'] .message-stack,
@@ -943,11 +1256,13 @@ onBeforeUnmount(() => {
 }
 
 .worked-separator-line {
-  @apply h-px bg-zinc-300/80 flex-1;
+  @apply h-px flex-1;
+  background: var(--color-border-default);
 }
 
 .worked-separator-text {
-  @apply m-0 text-sm leading-relaxed font-normal text-slate-800;
+  @apply m-0 text-sm leading-relaxed font-normal;
+  color: var(--color-text-secondary);
 }
 
 .image-modal-backdrop {
@@ -959,11 +1274,15 @@ onBeforeUnmount(() => {
 }
 
 .image-modal-close {
-  @apply absolute top-2 right-2 z-10 w-10 h-10 rounded-full bg-white/90 text-slate-900 border border-slate-300 flex items-center justify-center;
+  @apply absolute top-2 right-2 z-10 w-10 h-10 rounded-full border flex items-center justify-center;
+  background: var(--color-bg-overlay);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-default);
 }
 
 .image-modal-image {
-  @apply block max-w-full max-h-[90vh] rounded-2xl shadow-2xl bg-white;
+  @apply block max-w-full max-h-[90vh] rounded-2xl shadow-2xl;
+  background: var(--color-bg-surface);
 }
 
 .icon-svg {

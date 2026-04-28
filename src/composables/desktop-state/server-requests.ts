@@ -1,4 +1,4 @@
-import type { UiServerRequest } from '../../types/codex'
+import type { UiPersistedServerRequest, UiServerRequest } from '../../types/codex'
 
 export function upsertServerRequestMap(
   map: Record<string, UiServerRequest[]>,
@@ -49,4 +49,34 @@ export function listSelectedServerRequests(
     rows.push(...map[globalScope])
   }
   return rows.sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
+}
+
+export function listPersistedServerRequestsForWorkspace(
+  map: Record<string, UiPersistedServerRequest[]>,
+  cwd: string,
+  getThreadCwdById: (threadId: string) => string,
+): UiPersistedServerRequest[] {
+  const normalizedCwd = cwd.trim()
+  if (!normalizedCwd) return []
+
+  const matches: UiPersistedServerRequest[] = []
+  for (const requests of Object.values(map)) {
+    if (requests.length === 0) continue
+    for (const request of requests) {
+      const requestCwd = request.cwd.trim()
+      if (requestCwd) {
+        if (requestCwd === normalizedCwd) {
+          matches.push(request)
+        }
+        continue
+      }
+
+      const mappedCwd = getThreadCwdById(request.threadId)
+      if (mappedCwd === normalizedCwd) {
+        matches.push(request)
+      }
+    }
+  }
+
+  return matches.sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
 }

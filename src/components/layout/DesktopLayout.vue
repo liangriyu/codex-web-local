@@ -91,12 +91,15 @@ function onResizeHandleMouseDown(event: MouseEvent): void {
 @reference "tailwindcss";
 
 .desktop-layout {
-  @apply h-screen grid bg-slate-100 text-slate-900 overflow-hidden;
+  @apply h-screen grid overflow-hidden;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
   grid-template-columns: var(--layout-columns);
 }
 
 .desktop-sidebar {
-  @apply bg-slate-100 min-h-0 overflow-y-auto;
+  @apply min-h-0 overflow-y-auto;
+  background: var(--color-bg-app);
 }
 
 .desktop-resize-handle {
@@ -109,6 +112,7 @@ function onResizeHandleMouseDown(event: MouseEvent): void {
 }
 
 .desktop-main {
-  @apply bg-white min-h-0 overflow-y-hidden overflow-x-visible;
+  @apply min-h-0 overflow-y-hidden overflow-x-visible;
+  background: var(--color-bg-surface);
 }
 </style>

@@ -15,6 +15,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     first.id === second.id &&
     first.role === second.role &&
     first.text === second.text &&
+    first.turnId === second.turnId &&
     areStringArraysEqual(first.images, second.images) &&
     first.messageType === second.messageType &&
     first.rawPayload === second.rawPayload &&

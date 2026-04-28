@@ -1,0 +1,3 @@
+{"type":"session_start","sessionId":"session-no-file-change","threadId":"thread-no-file-change","createdAt":"2026-04-05T01:10:00.000Z"}
+{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-05T01:10:01.000Z","item":{"type":"assistant_message","text":"这里只讨论，不修改文件"}}
+{"type":"response_item","turnId":"turn-1","createdAt":"2026-04-05T01:10:02.000Z","item":{"type":"custom_tool_call","name":"search","arguments":"codex-web-local"}}
