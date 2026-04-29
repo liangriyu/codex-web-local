@@ -23,6 +23,8 @@ test('bridge exposes web-local account private rpc methods', async () => {
   assert.match(bridge, /syncCurrentRuntimeAccountProfile/)
   assert.match(bridge, /method === 'account\/login\/start'/)
   assert.match(bridge, /loginType === 'chatgpt'/)
+  assert.match(bridge, /isExternalAuthActiveError/)
+  assert.match(bridge, /startIsolatedAccountProfileLogin/)
   assert.match(bridge, /syncCodexAuthFileWithActiveProfile/)
   assert.match(bridge, /syncCodexAuthFileWithActiveProfile\(result\.activeProfileId\)/)
   assert.match(bridge, /managedTokenPayload/)
