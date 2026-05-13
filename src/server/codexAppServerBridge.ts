@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -245,6 +245,16 @@ function mapLoginStartErrorToPrivateRpcError(method: string, error: unknown): Pr
     '当前运行环境无法启动账号登录回调服务，请在具备本地回调端口权限的环境中重试。',
     409,
   )
+}
+
+function isExternalAuthActiveError(error: unknown): boolean {
+  const message = getErrorMessage(error, '').toLowerCase()
+  return message.includes('external auth is active')
+}
+
+function isChatgptBrowserLoginParams(params: unknown): boolean {
+  const body = asRecord(params)
+  return readText(body?.type) === 'chatgpt'
 }
 
 function normalizePreviewPath(rawPath: string): string {
@@ -1318,6 +1328,7 @@ class AppServerProcess {
     enabled: false,
     model: 'gpt-4o-mini-transcribe',
   }
+  private readonly isolatedLoginCleanupTasks = new Set<() => Promise<void>>()
   private readonly accountTokenBroker = createAccountTokenBroker({
     refresh: async (profile) => {
       if (profile.tokenPayload) return profile.tokenPayload
@@ -1539,6 +1550,222 @@ class AppServerProcess {
       }
     } catch {
       return null
+    }
+  }
+
+  private decodeJwtPayload(token: string): Record<string, unknown> | null {
+    const normalizedToken = readText(token)
+    if (!normalizedToken) return null
+    const segments = normalizedToken.split('.')
+    if (segments.length < 2) return null
+
+    const payloadSegment = segments[1] ?? ''
+    const normalizedPayload = payloadSegment.replace(/-/g, '+').replace(/_/g, '/')
+    const paddingLength = (4 - (normalizedPayload.length % 4)) % 4
+    const paddedPayload = normalizedPayload + '='.repeat(paddingLength)
+
+    try {
+      const decoded = Buffer.from(paddedPayload, 'base64').toString('utf8')
+      const parsed = JSON.parse(decoded)
+      return asRecord(parsed)
+    } catch {
+      return null
+    }
+  }
+
+  private async importAccountProfileFromCodexHome(codexHomeDir: string): Promise<void> {
+    const authPath = join(codexHomeDir, 'auth.json')
+    const raw = await readFile(authPath, 'utf8')
+    const body = asRecord(JSON.parse(raw))
+    const authMode = readText(body?.auth_mode)
+    const tokens = asRecord(body?.tokens)
+    const accessToken = readText(tokens?.access_token)
+    const accountId = readText(tokens?.account_id)
+    if (!accessToken || !accountId) {
+      throw new Error('Isolated login auth.json is missing access token or account id')
+    }
+
+    const idToken = readOptionalText(tokens?.id_token)
+    const refreshToken = readOptionalText(tokens?.refresh_token)
+    const accessTokenPayload = this.decodeJwtPayload(accessToken)
+    const authClaims = asRecord(accessTokenPayload?.['https://api.openai.com/auth'])
+    const profileClaims = asRecord(accessTokenPayload?.['https://api.openai.com/profile'])
+    const email = readOptionalText(profileClaims?.email)
+    const chatgptAccountId = readText(authClaims?.chatgpt_account_id) || accountId
+    const chatgptPlanType = readOptionalText(authClaims?.chatgpt_plan_type)
+
+    const snapshot = await readAccountProfileSnapshot()
+    const existing = snapshot.profiles.find((profile) => {
+      if (profile.tokenPayload?.chatgptAccountId === chatgptAccountId) return true
+      if (profile.accountId === accountId) return true
+      return email !== null && profile.email === email
+    }) ?? null
+    const profileId = existing?.profileId ?? email ?? accountId
+    const profileAccountId = email ?? accountId
+    const managedTokenPayload = (authMode === 'chatgpt' || idToken !== null || refreshToken !== null)
+      ? {
+          idToken,
+          accessToken,
+          refreshToken,
+          accountId: chatgptAccountId,
+        }
+      : (existing?.managedTokenPayload ?? null)
+
+    await upsertAccountProfile({
+      profileId,
+      accountId: profileAccountId,
+      provider: 'chatgptAuthTokens',
+      email,
+      planType: chatgptPlanType ?? existing?.planType ?? null,
+      tokenPayload: {
+        accessToken,
+        chatgptAccountId,
+        chatgptPlanType,
+        expiresAtIso: null,
+      },
+      managedTokenPayload,
+      status: existing?.status === 'active' ? 'active' : 'inactive',
+      lastUsedAtIso: new Date().toISOString(),
+    })
+  }
+
+  async startIsolatedAccountProfileLogin(): Promise<{ type: 'chatgpt'; loginId: string | null; authUrl: string }> {
+    const isolatedCodexHome = await mkdtemp(join(tmpdir(), 'codex-web-local-account-login-'))
+    const proc = spawn('codex', ['app-server'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        CODEX_HOME: isolatedCodexHome,
+      },
+    })
+
+    let cleaned = false
+    let readBuffer = ''
+    let nextId = 1
+    let activeLoginId: string | null = null
+    const pending = new Map<number, {
+      resolve: (value: unknown) => void
+      reject: (reason?: unknown) => void
+    }>()
+
+    const cleanup = async () => {
+      if (cleaned) return
+      cleaned = true
+      this.isolatedLoginCleanupTasks.delete(cleanup)
+      for (const request of pending.values()) {
+        request.reject(new Error('isolated login server stopped'))
+      }
+      pending.clear()
+      if (!proc.killed) {
+        try {
+          proc.kill('SIGTERM')
+        } catch {
+          // ignore
+        }
+      }
+      await rm(isolatedCodexHome, { recursive: true, force: true }).catch(() => {})
+    }
+    this.isolatedLoginCleanupTasks.add(cleanup)
+
+    const callIsolatedRpc = async (method: string, params: unknown): Promise<unknown> => {
+      const id = nextId++
+      return await new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        proc.stdin.write(`${JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method,
+          params,
+        } satisfies JsonRpcCall)}\n`)
+      })
+    }
+
+    const finalizeImport = async () => {
+      try {
+        await this.importAccountProfileFromCodexHome(isolatedCodexHome)
+      } catch (error) {
+        console.warn('[codex-web-local] Failed to import isolated login profile:', error)
+      } finally {
+        await cleanup()
+      }
+    }
+
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk: string) => {
+      readBuffer += chunk
+      let lineEnd = readBuffer.indexOf('\n')
+      while (lineEnd !== -1) {
+        const line = readBuffer.slice(0, lineEnd).trim()
+        readBuffer = readBuffer.slice(lineEnd + 1)
+        lineEnd = readBuffer.indexOf('\n')
+        if (!line) continue
+
+        let message: JsonRpcResponse
+        try {
+          message = JSON.parse(line) as JsonRpcResponse
+        } catch {
+          continue
+        }
+
+        if (typeof message.id === 'number' && pending.has(message.id)) {
+          const request = pending.get(message.id)
+          pending.delete(message.id)
+          if (!request) continue
+          if (message.error) {
+            request.reject(new Error(message.error.message))
+          } else {
+            request.resolve(message.result)
+          }
+          continue
+        }
+
+        if (typeof message.method === 'string' && message.method === 'account/login/completed') {
+          const payload = asRecord(message.params)
+          const loginId = readOptionalText(payload?.loginId)
+          const success = payload?.success === true
+          if (success && activeLoginId && loginId === activeLoginId) {
+            void finalizeImport()
+          }
+          if (!success && activeLoginId && loginId === activeLoginId) {
+            void cleanup()
+          }
+        }
+      }
+    })
+
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', () => {
+      // Keep stderr silent; errors surface via JSON-RPC responses.
+    })
+    proc.on('exit', () => {
+      void cleanup()
+    })
+
+    try {
+      await callIsolatedRpc('initialize', {
+        clientInfo: {
+          name: 'codex-web-local-isolated-login',
+          version: '0.1.0',
+        },
+        capabilities: {
+          experimentalApi: true,
+        },
+      })
+      const started = asRecord(await callIsolatedRpc('account/login/start', { type: 'chatgpt' }))
+      const authUrl = readText(started?.authUrl)
+      const loginId = readOptionalText(started?.loginId)
+      if (!authUrl) {
+        throw new Error('Isolated account/login/start did not return authUrl')
+      }
+      activeLoginId = loginId
+      return {
+        type: 'chatgpt',
+        loginId,
+        authUrl,
+      }
+    } catch (error) {
+      await cleanup()
+      throw error
     }
   }
 
@@ -2809,6 +3036,10 @@ class AppServerProcess {
   }
 
   dispose(): void {
+    for (const task of this.isolatedLoginCleanupTasks) {
+      void task().catch(() => {})
+    }
+    this.isolatedLoginCleanupTasks.clear()
     if (!this.process) return
 
     const proc = this.process
@@ -3023,6 +3254,15 @@ export function createCodexBridgeMiddleware(options: { voiceInputFallback?: Voic
           setJson(res, 200, { result })
           return
         } catch (error) {
+          if (
+            body.method === 'account/login/start'
+            && isChatgptBrowserLoginParams(params)
+            && isExternalAuthActiveError(error)
+          ) {
+            const result = await appServer.startIsolatedAccountProfileLogin()
+            setJson(res, 200, { result })
+            return
+          }
           if (error instanceof PrivateRpcError) {
             setJson(res, error.statusCode, { error: { code: error.code, message: error.message } })
             return

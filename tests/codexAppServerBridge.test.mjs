@@ -232,6 +232,64 @@ test('account login start returns actionable 409 when callback server cannot sta
   }
 })
 
+test('account login start(chatgpt) falls back to isolated profile login when external auth is active', async () => {
+  const globalScope = globalThis
+  const previousSharedBridge = globalScope.__codexRemoteSharedBridge__
+  const fakeAppServer = {
+    setVoiceInputFallbackConfig() {},
+    async rpc(method) {
+      assert.equal(method, 'account/login/start')
+      throw new Error('External auth is active. Use account/login/start (chatgptAuthTokens) to update it or account/logout to clear it.')
+    },
+    async startIsolatedAccountProfileLogin() {
+      return {
+        type: 'chatgpt',
+        loginId: 'isolated-login-1',
+        authUrl: 'https://auth.example.com/isolate',
+      }
+    },
+    triggerSharedSessionSnapshotSync() {},
+    onNotification() {
+      return () => {}
+    },
+    dispose() {},
+  }
+  const fakeMethodCatalog = {
+    async listMethods() {
+      return []
+    },
+    async listNotificationMethods() {
+      return []
+    },
+  }
+  globalScope.__codexRemoteSharedBridge__ = {
+    appServer: fakeAppServer,
+    methodCatalog: fakeMethodCatalog,
+  }
+
+  const middleware = createCodexBridgeMiddleware()
+
+  try {
+    const res = await invokeMiddleware(
+      middleware,
+      'POST',
+      '/codex-api/rpc',
+      { method: 'account/login/start', params: { type: 'chatgpt' } },
+    )
+    assert.equal(res.statusCode, 200)
+    const body = parseBody(res)
+    assert.equal(body.result.type, 'chatgpt')
+    assert.equal(body.result.loginId, 'isolated-login-1')
+    assert.equal(body.result.authUrl, 'https://auth.example.com/isolate')
+  } finally {
+    middleware.dispose()
+    delete globalScope.__codexRemoteSharedBridge__
+    if (previousSharedBridge) {
+      globalScope.__codexRemoteSharedBridge__ = previousSharedBridge
+    }
+  }
+})
+
 test('git push status reports upstream metadata and push succeeds', async () => {
   const { rootDir, repoDir } = await createBareRemoteWorkspace()
 
